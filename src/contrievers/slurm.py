@@ -1,0 +1,56 @@
+from logging import getLogger
+import os
+import sys
+import torch
+import socket
+import signal
+import subprocess
+logger = getLogger()
+def sig_handler(signum, frame):
+    logger.warning("Signal handler called with signal " + str(signum))
+    prod_id = int(os.environ['SLURM_PROCID'])
+    logger.warning("Host: %s - Global rank: %i" % (socket.gethostname(), prod_id))
+    if prod_id == 0:
+        logger.warning("Requeuing job " + os.environ['SLURM_JOB_ID'])
+        os.system('scontrol requeue ' + os.environ['SLURM_JOB_ID'])
+    else:
+        logger.warning("Not the main process, no need to requeue.")
+    sys.exit(-1)
+def term_handler(signum, frame):
+    logger.warning("Signal handler called with signal " + str(signum))
+    logger.warning("Bypassing SIGTERM.")
+def init_signal_handler():
+    signal.signal(signal.SIGUSR1, sig_handler)
+    signal.signal(signal.SIGTERM, term_handler)
+def init_distributed_mode(params):
+    is_slurm_job = 'SLURM_JOB_ID' in os.environ and not 'WORLD_SIZE' in os.environ
+    has_local_rank = hasattr(params, 'local_rank')
+    if is_slurm_job and has_local_rank:
+        assert params.local_rank == -1
+        params.local_rank = int(os.environ['SLURM_LOCALID'])
+        params.global_rank = int(os.environ['SLURM_PROCID'])
+        params.world_size = int(os.environ['SLURM_NTASKS'])
+        hostnames = subprocess.check_output(['scontrol', 'show', 'hostnames', os.environ['SLURM_JOB_NODELIST']])
+        params.main_addr = hostnames.split()[0].decode('utf-8')
+        assert 10001 <= params.main_port <= 20000 or params.world_size == 1
+        os.environ['MASTER_ADDR'] = params.main_addr
+        os.environ['MASTER_PORT'] = str(params.main_port)
+        os.environ['WORLD_SIZE'] = str(params.world_size)
+        os.environ['RANK'] = str(params.global_rank)
+        is_distributed = True
+    elif has_local_rank and params.local_rank != -1:
+        assert params.main_port == -1
+        params.global_rank = int(os.environ['RANK'])
+        params.world_size = int(os.environ['WORLD_SIZE'])
+        is_distributed = True
+    else:
+        params.local_rank = 0
+        params.global_rank = 0
+        params.world_size = 1
+        is_distributed = False
+    torch.cuda.set_device(params.local_rank)
+    if is_distributed:
+        torch.distributed.init_process_group(
+            init_method='env://',
+            backend='nccl',
+        )
