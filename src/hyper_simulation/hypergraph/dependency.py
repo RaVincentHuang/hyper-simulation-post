@@ -1,4 +1,31 @@
-from thefuzz import process
+"""Convert spaCy dependencies into normalized vertices and n-ary relations."""
+
+try:
+    from thefuzz import process
+except ImportError:
+    # Hypergraph types remain importable in minimal installations.  Experiment
+    # environments still use thefuzz; this deterministic fallback implements
+    # only the extractOne contract needed below.
+    from difflib import SequenceMatcher
+
+    class _FallbackProcess:
+        @staticmethod
+        def extractOne(query: str, choices):
+            ranked = [
+                (
+                    choice,
+                    round(
+                        100
+                        * SequenceMatcher(
+                            None, str(query).casefold(), str(choice).casefold()
+                        ).ratio()
+                    ),
+                )
+                for choice in choices
+            ]
+            return max(ranked, key=lambda item: (item[1], str(item[0]))) if ranked else None
+
+    process = _FallbackProcess()
 from hyper_simulation.hypergraph.linguistic import QueryType, Pos, Tag, Dep, Entity
 from hyper_simulation.hypergraph.entity import ENT
 dead_dep = {Dep.dative, Dep.prt, Dep.parataxis}
@@ -36,6 +63,8 @@ def _restrict_correfs(clusters: list[list[tuple[int, int]]], level: int=0) -> li
                 restricted.append(cluster)
     return restricted
 class Node:
+    """Mutable linguistic token record enriched during graph construction."""
+
     def __init__(self, text: str, pos: Pos, tag: Tag, dep: Dep, ent: Entity, lemma: str, index: int) -> None:
         self.text = text
         self.original_text = text
@@ -76,13 +105,19 @@ class Node:
         self.wd_tags: dict[str, str] = {}
         self.source_id: str | int | None = None
     def set_sentence(self, sentence: str, start: int, end: int) -> None:
+        """Attach the dependency-covered sentence and token bounds."""
+
         self.sentence = sentence
         self.covered_sentence = sentence
         self.sentence_start = start
         self.sentence_end = end
     def set_entity(self, entity: ENT) -> None:
+        """Attach a project-level coarse entity type."""
+
         self.entity = entity
     def type_str(self) -> str | None:
+        """Return the matcher-facing semantic type for this node, if any."""
+
         if self.pos in {Pos.VERB, Pos.AUX}:
             return None
         if self.is_query:
@@ -137,6 +172,8 @@ class Node:
             return "ADVERB"
     @staticmethod
     def from_doc(doc, abst) -> tuple[list['Node'], list['Node']]:
+        """Build linked nodes and roots from a spaCy document and abstractor."""
+
         nodes: list[Node] = []
         node_map: dict[int, Node] = {}
         wildcard_tags = {',', '.', '-LRB-', '-RRB-', '``', ':', "''", 'PRP$', 'WP$', '$', 'AFX'}
@@ -185,6 +222,8 @@ class Node:
             assert root.dep == Dep.ROOT or root.dep == Dep.dep, f"Root node dep should be ROOT or _SP, got {root.dep.name}: '{root.text}'\nDOC: '{doc.text}'"
         return nodes, roots
     def has_entity(self) -> bool:
+        """Return whether either entity taxonomy assigns a concrete type."""
+
         return self.ent != Entity.NOT_ENTITY or (self.entity is not None and self.entity != ENT.NOT_ENT)
     def __format__(self, format_spec: str) -> str:
         return f"Node(text='{self.text}', pos={self.pos.name}, tag={self.tag.name}, dep={self.dep.name}, ent={self.ent.name}, sentence='{self.sentence}')"
@@ -195,6 +234,8 @@ class Node:
     def __str__(self) -> str:
         return self.__format__('')
 class Relationship:
+    """One dependency-rooted n-ary relation and its source sentence span."""
+
     def __init__(self, entities: list[Node], sentence: str, relationship_sentence: str) -> None:
         self.root = entities[0]
         self.entities = entities
@@ -210,6 +251,8 @@ class Relationship:
         self.end = end + 1
         self.father: Relationship | None = None
     def position_text(self, node: Node) -> str:
+        """Render a relation participant with its determiner-like children."""
+
         from hyper_simulation.hypergraph.hypergraph import Vertex
         res = Vertex.resolved_text(node)
         determiner_children: list[Node] = []
@@ -222,6 +265,8 @@ class Relationship:
             res = f"{prefix} {res}"
         return res
     def relationship_text_simple(self) -> str:
+        """Render only the relation-bearing portion of the source sentence."""
+
         def calc_prefix_suffix():
             rel_start = self.sentence.find(self.relationship_sentence)
             if rel_start != -1:
@@ -252,6 +297,8 @@ class Relationship:
     def __display__(self) -> str:
         return self.__format__('')
 class LocalDoc:
+    """Pickle-friendly token-text view supporting integer and slice access."""
+
     def __init__(self, doc) -> None:
         self.tokens = [token.text for token in doc]
     def __getitem__(self, index) -> str:
@@ -260,6 +307,8 @@ class LocalDoc:
         else:
             return self.tokens[index]
 class Dependency:
+    """Stateful normalization pipeline from dependency nodes to relationships."""
+
     def __init__(self, nodes: list[Node], roots: list[Node], doc: LocalDoc, is_query: bool=False) -> None:
         self.nodes = nodes
         self.roots = roots
@@ -286,6 +335,8 @@ class Dependency:
                 right_edge = succ.index
         return self.doc[left_edge : right_edge + 1]
     def solve_conjunctions(self):
+        """Lift conjuncts and appositions to the governing dependency level."""
+
         if self.is_query:
             wh_dets = {"what", "which"}
             for node in self.nodes:
@@ -322,6 +373,8 @@ class Dependency:
         self.roots = [node for node in self.nodes if node.head is None]
         return self
     def mark_pronoun_antecedents(self):
+        """Resolve supported relative and query-clause pronoun patterns."""
+
         for node in self.nodes:
             if node.dep != Dep.relcl or not node.head:
                 continue
@@ -353,6 +406,8 @@ class Dependency:
                         child.pronoun_antecedent = ccomp_child
         return self
     def mark_prefixes(self):
+        """Record preposition and agent markers adjacent to participant nodes."""
+
         for node in self.nodes:
             if node.dep == Dep.agent and node.head:
                 if node.index < node.head.index:
@@ -377,6 +432,8 @@ class Dependency:
                     node.suffix_index = node.head.index
         return self
     def mark_vertex(self):
+        """Select semantic vertices and annotate query placeholders."""
+
         for node in self.nodes:
             if node.dep in {Dep.nsubj, Dep.nsubjpass, Dep.csubj, Dep.csubjpass}:
                 node.dominator = True
@@ -482,6 +539,8 @@ class Dependency:
                 self.vertexes.append(node)
         return self
     def compress_dependencies(self):
+        """Connect selected vertices across intervening non-vertex tokens."""
+
         for node in self.vertexes:
             if not node.head:
                 continue
@@ -496,6 +555,8 @@ class Dependency:
                 self.links_succ[pred].append(node)
         return self
     def calc_relationships(self) -> tuple[list[Node], list[Relationship], dict[Node, int]]:
+        """Build n-ary relationships and assign stable within-document vertex ids."""
+
         def _match_same(
             best_match,
             score,
@@ -546,6 +607,8 @@ class Dependency:
         ent_map: dict[int, ENT] = {}
         cnt = 1
         deferred_coref_nodes: list[Node] = []
+        # Exact and near-exact lexical identity is accepted only when POS and
+        # both entity taxonomies agree; coreferent nodes are assigned afterward.
         for node in self.vertexes:
             if node.coref_primary:
                 deferred_coref_nodes.append(node)

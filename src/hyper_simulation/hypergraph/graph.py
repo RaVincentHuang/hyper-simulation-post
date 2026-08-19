@@ -1,18 +1,26 @@
+"""Lossy pairwise graph view of a linguistic hypergraph."""
+
 from hyper_simulation.hypergraph.dependency import LocalDoc
 from hyper_simulation.hypergraph.hypergraph import Hypergraph, Vertex
 from dataclasses import dataclass
 @dataclass
 class Edge:
+    """One labeled directed edge in the pairwise graph view."""
+
     src: Vertex
     dst: Vertex
     label: str
 class Graph:
+    """Pairwise projection used by consumers that cannot process hyperedges."""
+
     def __init__(self, vertices: list[Vertex], edges: list[Edge], doc: LocalDoc) -> None:
         self.vertices = vertices
         self.edges = edges
         self.doc = doc
     @classmethod
     def from_hypergraph(cls, hypergraph: Hypergraph) -> 'Graph':
+        """Project each hyperedge into edges from its first incident vertex."""
+
         vertices = hypergraph.vertices
         edges: list[Edge] = []
         for he in hypergraph.hyperedges:

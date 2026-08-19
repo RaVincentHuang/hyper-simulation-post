@@ -1,3 +1,5 @@
+"""Prompt text for ARC multiple-choice question answering."""
+
 ARC_BASE = """### Context:
 {context_text}
 {question}

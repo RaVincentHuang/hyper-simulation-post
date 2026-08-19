@@ -1,16 +1,10 @@
-from ast import mod
-from html import entities
-from itertools import chain
+"""Extract typed NetworkX graphs from model-generated record streams."""
+
 import json
 import re
-from venv import logger
-from hyper_simulation.llm import prompt
-from hyper_simulation.question_answer.vmdit import relation
-from sympy import content
 from hyper_simulation.graph_generator.ontology import general_entity, general_relation
 from hyper_simulation.llm.prompt.graph import graph_building, simple_graph_building, graph_building_without_type, graph_records
 from hyper_simulation.llm.prompt.graph import graph_entity_records_msg, graph_relation_records_msg, graph_attributes_records_msg
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.language_models import BaseLLM, BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -25,16 +19,21 @@ from tqdm import tqdm
 import re
 import logging
 logger = logging.getLogger(__name__)
-file_handler = logging.FileHandler(f'logs/{__name__}.log')
-file_handler.setLevel(logging.INFO)
-logger.addHandler(file_handler)
+if not logger.handlers:
+    logger.addHandler(logging.NullHandler())
 logger.setLevel(logging.INFO)
 class Graph(BaseModel):
+        """Structured schema used when a model emits a complete graph object."""
+
         class Node(BaseModel):
+            """Model-emitted entity record."""
+
             name: str = Field(..., description="The name of the entity")
             type: str = Field(..., description="The type of the entity")
             desc: str = Field(..., description="A description of the entity")
         class Edge(BaseModel):
+            """Model-emitted directed relation record."""
+
             src: str = Field(..., description="The source entity")
             dst: str = Field(..., description="The destination entity")
             type: str = Field(..., description="The type of the relation")
@@ -44,6 +43,8 @@ class Graph(BaseModel):
         entities: list[Node] = Field(..., description="The list of entities")
         relations: list[Edge] = Field(..., description="The list of relations")
 def fresh_entity_records(msg: AIMessage)-> tuple[str, list[tuple[str, str, str]]]:
+    """Parse entity records and return normalized prompt text plus tuples."""
+
     if not isinstance(msg.content, str):
         raise ValueError(f"Expected str")
     content = msg.content
@@ -62,6 +63,8 @@ def fresh_entity_records(msg: AIMessage)-> tuple[str, list[tuple[str, str, str]]
         raise ValueError(f"Expected entities")
     return outs, entities_list
 def fresh_relation_records(msg: AIMessage)-> tuple[str, list[tuple[str, str, str, str]]]:
+    """Parse relation records and return normalized prompt text plus tuples."""
+
     if not isinstance(msg.content, str):
         raise ValueError(f"Expected str")
     content = msg.content
@@ -82,6 +85,8 @@ def fresh_relation_records(msg: AIMessage)-> tuple[str, list[tuple[str, str, str
         raise ValueError(f"Expected relations")
     return outs, relations_list
 def fresh_attribute_records(msg: AIMessage)-> tuple[str, list[tuple[str, str, str, str]]]:
+    """Parse attribute records and return normalized prompt text plus tuples."""
+
     if not isinstance(msg.content, str):
         raise ValueError(f"Expected str")
     content = msg.content
@@ -103,6 +108,8 @@ def fresh_attribute_records(msg: AIMessage)-> tuple[str, list[tuple[str, str, st
     return outs, attributes_list
 @retry(stop=stop_after_attempt(5))
 async def build_graph_step_by_step(model: BaseChatModel, title, text, prop, task='popqa') -> nx.DiGraph:
+    """Build a graph through separate entity, relation, and attribute prompts."""
+
     msgs = [
         graph_entity_records_msg.format(entity_types=", ".join(general_entity), input_text=text),
     ]
@@ -139,6 +146,8 @@ async def build_graph_step_by_step(model: BaseChatModel, title, text, prop, task
         graph.add_edge(entity, key, type='attribute', desc=desc)
     return graph
 def fresh_records(content: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str, str]], list[tuple[str, str, str, str]]]:
+    """Parse the three supported record kinds from one model response."""
+
     entities_list: list[tuple[str, str, str]] = []
     relations_list: list[tuple[str, str, str, str]]= []
     attributes_list: list[tuple[str, str, str, str]] = []
@@ -153,6 +162,8 @@ def fresh_records(content: str) -> tuple[list[tuple[str, str, str]], list[tuple[
             return res
         else:
             return record
+    # The prompt contract is line-oriented and stops at the explicit sentinel;
+    # malformed lines are ignored while each recognized record keeps its order.
     for record in content.split("\n"):
         if "<END_OUTPUT>" in record:
             break
@@ -180,6 +191,8 @@ def fresh_records(content: str) -> tuple[list[tuple[str, str, str]], list[tuple[
         logger.warning(f"[No attributes]: {content}")
     return entities_list, relations_list, attributes_list
 async def build_graph(model: BaseLLM, title, text, prop, task='popqa') -> nx.DiGraph:
+    """Generate all records in one call and materialize a directed graph."""
+
     prompt = graph_records.partial(
         entity_types=", ".join(general_entity),
         relation_types=", ".join(general_relation)
@@ -208,6 +221,8 @@ async def build_graph(model: BaseLLM, title, text, prop, task='popqa') -> nx.DiG
         graph.add_edge(entity, key, type='attribute', desc=desc)
     return graph
 def build_graph_batch(model: BaseLLM, prompt_list: list[dict], task='popqa') -> list[nx.DiGraph]:
+    """Generate and materialize a batch of task-specific directed graphs."""
+
     global graph_building
     match task:
         case 'popqa':
@@ -239,10 +254,14 @@ def build_graph_batch(model: BaseLLM, prompt_list: list[dict], task='popqa') -> 
         graphs.append(graph)
     return graphs
 def save_graph(graph: nx.DiGraph, path: str) -> None:
+    """Serialize a directed graph in NetworkX node-link JSON form."""
+
     with open(path, 'w') as f:
         data = nx.node_link_data(graph)
         json.dump(data, f, indent=4)
 def load_graph(path: str) -> nx.DiGraph:
+    """Load a directed graph from NetworkX node-link JSON form."""
+
     with open(path, 'r') as f:
         data = json.load(f)
         graph = nx.node_link_graph(data)

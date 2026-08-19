@@ -1,3 +1,5 @@
+"""Prompt text for HotpotQA answer generation."""
+
 HOTPOT_QA_BASE = """### Background:
 {context_text}
 {question}

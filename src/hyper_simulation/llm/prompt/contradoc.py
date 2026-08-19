@@ -1,3 +1,5 @@
+"""Prompts for Contradoc relevance and entailment decisions."""
+
 contradoc_prompt = """
 You are an expert at checking consistency between a user question and retrieved context in a QA pipeline.
 Document A is always a question. Document B is RAG context that may support, contradict, or be irrelevant to the question.

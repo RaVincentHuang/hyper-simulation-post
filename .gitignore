@@ -26,3 +26,5 @@ logs/
 logs_1/
 
 *.lock
+!src/simulation/Cargo.lock
+!src/graph-simulation/Cargo.lock

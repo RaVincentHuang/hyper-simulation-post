@@ -1,3 +1,5 @@
+"""Encode passage shards for the Contriever retrieval index."""
+
 import os
 import argparse
 import csv
@@ -12,6 +14,8 @@ import contrievers.utils
 import contrievers.data
 import contrievers.normalize_text
 def embed_passages(args, passages, model, tokenizer):
+    """Encode passages in GPU batches and return their IDs and embeddings."""
+
     total = 0
     allids, allembeddings = [], []
     batch_ids, batch_text = [], []
@@ -30,6 +34,7 @@ def embed_passages(args, passages, model, tokenizer):
                 text = contrievers.normalize_text.normalize(text)
             batch_text.append(text)
             if len(batch_text) == args.per_gpu_batch_size or k == len(passages) - 1:
+                # Flush both complete batches and the final partial batch.
                 encoded_batch = tokenizer.batch_encode_plus(
                     batch_text,
                     return_tensors="pt",
@@ -50,6 +55,8 @@ def embed_passages(args, passages, model, tokenizer):
     allembeddings = torch.cat(allembeddings, dim=0).numpy()
     return allids, allembeddings
 def main(args):
+    """Load the encoder, process one deterministic shard, and pickle its output."""
+
     model, tokenizer, _ = contrievers.load_retriever(args.model_name_or_path)
     print(f"Model loaded from {args.model_name_or_path}.", flush=True)
     model.eval()
@@ -61,6 +68,7 @@ def main(args):
     start_idx = args.shard_id * shard_size
     end_idx = start_idx + shard_size
     if args.shard_id == args.num_shards - 1:
+        # Assign division remainders to the last shard to preserve full coverage.
         end_idx = len(passages)
     passages = passages[start_idx:end_idx]
     print(f"Embedding generation for {len(passages)} passages from idx {start_idx} to {end_idx}.")
@@ -69,6 +77,7 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Saving {len(allids)} passage embeddings to {save_file}.")
     with open(save_file, mode="wb") as f:
+        # IDs and vectors are stored together so index construction cannot reorder them.
         pickle.dump((allids, allembeddings), f)
     print(f"Total passages processed {len(allids)}. Written to {save_file}.")
 if __name__ == "__main__":

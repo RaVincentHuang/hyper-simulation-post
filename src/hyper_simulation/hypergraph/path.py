@@ -1,3 +1,5 @@
+"""Shortest-path searches over the vertex-hyperedge incidence graph."""
+
 from collections import deque, defaultdict
 from typing import Dict, List, Tuple, Union
 from hyper_simulation.hypergraph.hypergraph import Hyperedge, Hypergraph, Vertex
@@ -5,6 +7,8 @@ def find_shortest_hyperpaths(
     hypergraph: Hypergraph,
     pairs: List[Tuple[Vertex, Vertex]]
 ) -> Dict[Tuple[Vertex, Vertex], List[Hyperedge]]:
+    """Find an unbounded shortest hyperedge path for each requested pair."""
+
     queries_by_source = defaultdict(list)
     for u, v in pairs:
         queries_by_source[u].append(v)
@@ -46,11 +50,15 @@ def find_shortest_hyperpaths_local(
     hypergraph: Hypergraph,
     pairs: List[Tuple[Vertex, Vertex]]
 ) -> Dict[Tuple[Vertex, Vertex], List[Hyperedge]]:
+    """Find shortest paths without crossing source-hypergraph boundaries."""
+
     queries_by_source = defaultdict(list)
     for u, v in pairs:
         queries_by_source[u].append(v)
     result: Dict[Tuple[Vertex, Vertex], List[Hyperedge]] = {}
     for u, targets in queries_by_source.items():
+        # Component id is part of the BFS state: after the first edge, a path
+        # remains inside that edge's source context even through fused vertices.
         unset_component = object()
         start_state = (u, unset_component)
         distances: dict[tuple[Union[Vertex, Hyperedge], object], int] = {start_state: 0}
@@ -109,6 +117,8 @@ def find_shortest_hyperpaths_bounded(
     pairs: List[Tuple[Vertex, Vertex]],
     max_hops: int,
 ) -> Dict[Tuple[Vertex, Vertex], List[Hyperedge]]:
+    """Find shortest paths using at most ``max_hops`` hyperedges."""
+
     if max_hops < 0:
         return {(u, v): [] for u, v in pairs}
     queries_by_source = defaultdict(list)
@@ -166,6 +176,8 @@ def find_shortest_hyperpaths_local_bounded(
     pairs: List[Tuple[Vertex, Vertex]],
     max_hops: int,
 ) -> Dict[Tuple[Vertex, Vertex], List[Hyperedge]]:
+    """Find bounded shortest paths constrained to one source hypergraph."""
+
     if max_hops < 0:
         return {(u, v): [] for u, v in pairs}
     queries_by_source = defaultdict(list)

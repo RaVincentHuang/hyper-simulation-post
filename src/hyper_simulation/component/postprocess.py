@@ -1,3 +1,5 @@
+"""Path-consistency filtering and per-context simulation slicing."""
+
 import time
 import os
 from typing import Dict, List, Set, Tuple
@@ -332,6 +334,8 @@ def post_detection(
     hops: int = 10,
     require_all_neighbors: bool = False,
 ) -> list[tuple[Vertex, Vertex]]:
+    """Prune simulation pairs that lack relation-compatible neighbor support."""
+
     if not simulation:
         return []
     debug_postprocess = os.environ.get("POSTPROCESS_DEBUG", "0") not in {"0", "", "false", "False"}
@@ -620,6 +624,8 @@ def post_detection(
                 return True, reason
         return False, None
     dirty_u: set[Vertex] = set(match_by_u.keys())
+    # Deletions form a monotone fixed point.  Revisit only query vertices whose
+    # supporting neighborhood changed in the previous round.
     while dirty_u:
         to_remove: dict[tuple[Vertex, Vertex], dict[str, object]] = {}
         for u in dirty_u:
@@ -648,6 +654,8 @@ def post_detection(
         dirty_u = next_dirty_u
     return list(match)
 def get_simulation_slice(query: LocalHypergraph, data: LocalHypergraph, simulation: list[tuple[Vertex, Vertex]], num: int) -> list[list[tuple[Vertex, Vertex]]]:
+    """Partition a fused simulation relation by data-source provenance."""
+
     slices = [[] for _ in range(num)]
     for u, v in simulation:
         if u is None or v is None:
@@ -657,6 +665,8 @@ def get_simulation_slice(query: LocalHypergraph, data: LocalHypergraph, simulati
             slices[hg_id - 1].append((u, v))
     return slices
 def check_slice_consistency(query: LocalHypergraph, simulation_slice: list[tuple[Vertex, Vertex]], vertex_ids: set[int]) -> bool:
+    """Return whether a slice covers every requested query vertex id."""
+
     vertex_map: dict[Vertex, set[Vertex]] = {}
     for u, v in simulation_slice:
         if u not in vertex_map:
@@ -672,6 +682,8 @@ def check_slice_consistency(query: LocalHypergraph, simulation_slice: list[tuple
             hit_cnt += 1
     return hit_cnt == len(vertex_needs)
 def refine_simulation_slices(query: LocalHypergraph, simulation_slices: list[list[tuple[Vertex, Vertex]]], answer: str) -> list[list[tuple[Vertex, Vertex]]]:
+    """Prefer exact-answer targets when a query vertex has multiple matches."""
+
     def _match(v_text: str, answer: str) -> bool:
         return v_text.strip().lower() == answer.strip().lower()
     refined_slices: list[list[tuple[Vertex, Vertex]]] = []
@@ -690,6 +702,8 @@ def refine_simulation_slices(query: LocalHypergraph, simulation_slices: list[lis
         refined_slices.append(new_slice)
     return refined_slices
 def ranking_slices(query: LocalHypergraph, simulation_slices: list[list[tuple[Vertex, Vertex]]], vertex_ids: set[int], k: int) -> list[int]:
+    """Rank context slices by requested-query coverage, retaining cutoff ties."""
+
     if k <= 0 or not simulation_slices:
         return []
     vertex_needs: set[Vertex] = {u for u in query.vertices if u.id in vertex_ids}

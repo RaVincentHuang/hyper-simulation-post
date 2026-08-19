@@ -1,3 +1,5 @@
+"""Prompt preparation, file I/O, and output cleanup for VMDIT QA."""
+
 import jsonlines
 import json
 import copy
@@ -33,6 +35,8 @@ other_special_tokens = ["<s>", "</s>", "[PAD]",
 control_tokens = ["[Fully supported]", "[Partially supported]", "[No support / Contradictory]", "[No Retrieval]", "[Retrieval]",
                   "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]"]
 def load_special_tokens(tokenizer, use_grounding=False, use_utility=False):
+    """Resolve retrieval control tokens and optional score tokens to IDs."""
+
     ret_tokens = {token: tokenizer.convert_tokens_to_ids(
         token) for token in retrieval_tokens_names}
     rel_tokens = {}
@@ -50,9 +54,13 @@ def load_special_tokens(tokenizer, use_grounding=False, use_utility=False):
             ut_tokens[token] = tokenizer.convert_tokens_to_ids(token)
     return ret_tokens, rel_tokens, grd_tokens, ut_tokens
 def fix_spacing(input_text):
+    """Insert missing spaces after sentence-ending punctuation."""
+
     output_text = re.sub(r'(?<=\w)([.!?])(?=\w)', r'\1 ', input_text)
     return output_text
 def postprocess(pred):
+    """Remove retrieval-control tokens and the model end token."""
+
     special_tokens = ["[Fully supported]", "[Partially supported]", "[No support / Contradictory]", "[No Retrieval]", "[Retrieval]",
                       "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]"]
     for item in special_tokens:
@@ -64,19 +72,27 @@ def postprocess(pred):
         pred = pred[1:]
     return pred
 def load_jsonlines(file):
+    """Load every object from a JSONL file."""
+
     with jsonlines.open(file, 'r') as jsonl_f:
         lst = [obj for obj in jsonl_f]
     return lst
 def load_file(input_fp):
+    """Load either a JSON array or JSONL records based on the suffix."""
+
     if input_fp.endswith(".json"):
         input_data = json.load(open(input_fp))
     else:
         input_data = load_jsonlines(input_fp)
     return input_data
 def save_file_jsonl(data, fp):
+    """Replace a JSONL file with the supplied records."""
+
     with jsonlines.open(fp, mode='w') as writer:
         writer.write_all(data)
 def preprocess_input(input_data, task):
+    """Normalize task records into the legacy instruction schema."""
+
     if task == "factscore":
         for item in input_data:
             item["instruction"] = item["input"]
@@ -101,6 +117,8 @@ def preprocess_input(input_data, task):
             processed_input_data.append(entry)
         return processed_input_data
 def postprocess_output(input_instance, prediction, task, intermediate_results=None):
+    """Attach a prediction and optional evidence citations to an input record."""
+
     if task == "factscore":
         return {"input": input_instance["input"], "output": prediction, "topic": input_instance["topic"], "cat": input_instance["cat"]}
     elif task == "qa":
@@ -112,6 +130,7 @@ def postprocess_output(input_instance, prediction, task, intermediate_results=No
         if "splitted_sentences" not in intermediate_results:
             input_instance["output"] = postprocess(prediction)
         else:
+            # Preserve sentence/context alignment when adding numeric citations.
             for idx, (sent, doc) in enumerate(zip(intermediate_results["splitted_sentences"][0], intermediate_results["ctxs"][0])):
                 if len(sent) == 0:
                     continue
@@ -125,6 +144,8 @@ def postprocess_output(input_instance, prediction, task, intermediate_results=No
         input_instance["docs"] = docs
         return input_instance
 def process_instruction(item, task):
+    """Render a multiple-choice item with normalized A-D labels."""
+
     choices = item["choices"]
     instruction = TASK_INST[task]
     answer_labels = {}
@@ -149,6 +170,8 @@ def process_instruction(item, task):
     processed_instruction = instruction + "\n\n### Input:\n" + item["question"] + choices
     return processed_instruction
 def preprocess_input_data(item, task=None):
+    """Build one task instruction and populate ARC answer metadata in place."""
+
     if task in TASK_INST:
         instruction = TASK_INST[task]
     else:
@@ -183,6 +206,8 @@ def preprocess_input_data(item, task=None):
             item["question"] if instruction is not None else item["question"]
     return processed_instruction
 def postprocess_answers_closed(output, task, choices=None):
+    """Map generated text to a closed-set choice or FEVER label when possible."""
+
     final_output = None
     if choices is not None:
         for c in choices.split(" "):

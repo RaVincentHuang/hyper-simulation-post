@@ -1,11 +1,14 @@
+"""Infer and persist pairwise relations among retrieved contexts."""
+
 import tqdm
 import torch
 import json
-import matplotlib.pyplot as plt
 from hyper_simulation.llm.prompt.vmdit import same_statements, same_sentences
 from hyper_simulation.llm.chat_completion import get_invoke_prompt
 from tqdm import tqdm
 def get_ctxs_em(file_path):
+    """Read query texts and retrieval contexts that carry document IDs."""
+
     ctxs=[]
     query=[]
     with open(file_path, "r") as fin:
@@ -19,24 +22,32 @@ def get_ctxs_em(file_path):
             query.append(example["question"])
     return ctxs,query
 def same_statements_with_llm(evi, query):
+    """Ask the statement-level prompt whether evidence agrees with a query."""
+
     res = get_invoke_prompt({
         "evi" : evi,
         "query" : query,
     }, same_statements, top_p=0.7, temperature=0.9, )
     return res
 def same_sentences_with_llm(evi, query):
+    """Ask the sentence-level prompt whether evidence agrees with a query."""
+
     res = get_invoke_prompt({
         "evi" : evi,
         "query" : query,
     }, same_sentences, top_p=0.7, temperature=0.9, )
     return res
 def context_relation(t_context_result,f_context_result):
+    """Pair every accepted context ID with every rejected context ID."""
+
     r=[]
     for idx in t_context_result['id']:
         for idy in f_context_result['id']:
             r.append((idx,idy))
     return r
 def get_enquery(file_path):
+    """Classify retrieval contexts and return cross-class ID pairs and errors."""
+
     ctxs,query=get_ctxs_em(file_path)
     unsim_s=[]
     error_d=[]
@@ -49,6 +60,7 @@ def get_enquery(file_path):
             try:
                 r= same_statements_with_llm(evidences[j],q)
             except:
+                # Record failed model calls separately instead of assigning a relation.
                 error_d.append((i,j))
                 continue
             if "True" in r:
@@ -61,6 +73,8 @@ def get_enquery(file_path):
         unsim_s.append(unsim)
     return unsim_s,error_d
 def calc_relations(file_path, rel_path):
+    """Compute context relations and serialize them as JSON."""
+
     relation_c,error_d = get_enquery(file_path)
     print(len(relation_c))
     json_data = json.dumps(relation_c)

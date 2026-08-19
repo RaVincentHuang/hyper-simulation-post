@@ -1,3 +1,5 @@
+"""Decompose multihop questions and align subquestions to query vertices."""
+
 import json
 import re
 from langchain_ollama import ChatOllama
@@ -341,9 +343,12 @@ def _parse_and_normalize(raw_output: str | list, valid_ids: set[int]) -> list[tu
     parsed = json.loads(payload)
     return _normalize_result(parsed, valid_ids)
 def decompose_question(question: str, query: Hypergraph) -> list[tuple[str, set[int]]]:
+    """Generate subquestions and their query-vertex assignments for one question."""
+
     if not question or not question.strip():
         return []
     vertex_context, valid_ids = _build_vertex_context(query)
+    # The conservative fallback retains the whole question and its vertex universe.
     fallback = [(question.strip(), set(valid_ids))]
     prompt = _build_decompose_prompt(question, vertex_context)
     try:
@@ -358,6 +363,8 @@ def decompose_question(question: str, query: Hypergraph) -> list[tuple[str, set[
         logger.warning(f"decompose_question failed: {type(exc).__name__}: {exc}, using fallback")
         return fallback
 def decompose_question_with_subs(question: str, subs: list[str], query: Hypergraph) -> list[tuple[str, set[int]]]:
+    """Align caller-supplied subquestions to query vertices, rewriting shorthand only."""
+
     if not question or not question.strip():
         return []
     cleaned_subs = [s.strip() for s in subs if isinstance(s, str) and s.strip()]
@@ -381,6 +388,8 @@ def decompose_question_batch(
     questions: list[str],
     queries: list[Hypergraph],
 ) -> list[list[tuple[str, set[int]]]]:
+    """Batch question decomposition while preserving input/result positions."""
+
     if len(questions) != len(queries):
         raise ValueError(
             f"questions and queries must have same length, got {len(questions)} and {len(queries)}"
@@ -399,6 +408,7 @@ def decompose_question_batch(
         valid_ids_list.append(valid_ids)
         fallbacks.append([(question.strip(), set(valid_ids))])
     llm = ChatOllama(model="qwen3.5:9b", temperature=0.1, top_p=1, reasoning=False)
+    # Compact model inputs while retaining indices for deterministic scatter-back.
     non_empty_idx = [i for i, p in enumerate(prompts) if p]
     prompt_payload = [prompts[i] for i in non_empty_idx]
     raw_outputs: list[str] = []
@@ -422,6 +432,8 @@ def decompose_question_with_subs_batch(
     subs_batch: list[list[str]],
     queries: list[Hypergraph],
 ) -> list[list[tuple[str, set[int]]]]:
+    """Batch shorthand normalization and vertex alignment for supplied subquestions."""
+
     if len(questions) != len(subs_batch) or len(questions) != len(queries):
         raise ValueError(
             "questions, subs_batch, and queries must have same length, "
@@ -450,6 +462,7 @@ def decompose_question_with_subs_batch(
             rewrite_indices.append(idx)
     llm = ChatOllama(model="qwen3.5:9b", temperature=0.1, top_p=1, reasoning=False)
     rewritten_subs_list = [list(subs) for subs in cleaned_subs_list]
+    # Rewrite and alignment are separate batches so ordinary subquestions stay exact.
     if rewrite_prompts:
         rewrite_outputs = get_generate(rewrite_prompts, llm)
         for out_idx, sample_idx in enumerate(rewrite_indices):
@@ -490,6 +503,8 @@ def decompose_question_with_subs_batch(
                 )
     return results
 def decompose_question_with_nums(question: str, num: int) -> list[str]:
+    """Generate exactly ``num`` subquestions, padding or truncating as needed."""
+
     if not question or not question.strip() or num <= 0:
         return []
     prompt = f"""You are decomposing one MultiHop QA query for retrieval-augmented generation.
@@ -508,6 +523,7 @@ Output STRICT JSON:
   ]
 }}
 """
+    # Repetition preserves the requested cardinality when model output is unusable.
     fallback = [question.strip() for _ in range(num)]
     try:
         llm = ChatOllama(model="qwen3.5:9b", temperature=0.1, top_p=1, reasoning=False)
@@ -536,6 +552,8 @@ Output STRICT JSON:
         )
         return fallback
 def decompose_question_with_nums_batch(questions: list[str], nums: list[int]) -> list[list[str]]:
+    """Batch fixed-cardinality decomposition for aligned question/count inputs."""
+
     if len(questions) != len(nums):
         raise ValueError(
             f"questions and nums must have same length, got {len(questions)} and {len(nums)}"
@@ -599,6 +617,8 @@ Output STRICT JSON:
             )
     return results
 def mark_vertex_ids_for_subquestions(question: str, subs: list[str], query: Hypergraph) -> list[tuple[str, set[int]]]:
+    """Mark query vertices referenced by each supplied subquestion."""
+
     if not question or not question.strip():
         return []
     cleaned_subs = [s.strip() for s in subs if isinstance(s, str) and s.strip()]
@@ -645,6 +665,8 @@ def mark_vertex_ids_for_subquestions_batch(
     subs_batch: list[list[str]],
     queries: list[Hypergraph],
 ) -> list[list[tuple[str, set[int]]]]:
+    """Batch vertex marking with deterministic lexical fallbacks per item."""
+
     if len(questions) != len(subs_batch) or len(questions) != len(queries):
         raise ValueError(
             "questions, subs_batch, and queries must have same length, "

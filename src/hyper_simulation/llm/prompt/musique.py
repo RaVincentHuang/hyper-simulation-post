@@ -1,3 +1,5 @@
+"""Prompt text for MuSiQue multihop question answering."""
+
 MUSIQUE_QA_BASE = """### Context:
 {context_text}
 {question}

@@ -1,8 +1,12 @@
+"""Construct and persist retrieval-query rewrites from leading evidence."""
+
 import json
 from hyper_simulation.llm.prompt.vmdit import rewrite
 from hyper_simulation.llm.chat_completion import get_invoke_prompt
 from tqdm import tqdm
 def read_evi(file_path):
+    """Read questions and their first retrieved context from JSONL."""
+
     query=[]
     ctxs=[]
     with open(file_path, "r") as fin:
@@ -12,6 +16,8 @@ def read_evi(file_path):
             ctxs.append(example["ctxs"][0]['title']+example["ctxs"][0]['text'])
     return query,ctxs
 def rewrite_with_llm(query):
+    """Invoke the VMDIT rewrite prompt for one query string."""
+
     res = get_invoke_prompt(
         {"query": query},
         rewrite,
@@ -20,9 +26,13 @@ def rewrite_with_llm(query):
     )
     return res
 def get_new_query(q,ct):
+    """Combine a question and possible evidence into a retrieval instruction."""
+
     ins = "Give a question [{q}] and its possible answering passages [{ct}].".format(q=q,ct=ct)
     return ins
 def get_query(file_path):
+    """Build retrieval instructions for all examples in a file."""
+
     query, ctxs= read_evi(file_path)
     new_q=[]
     error_q=[]
@@ -33,6 +43,8 @@ def get_query(file_path):
         new_q.append(nq)
     return new_q, error_q
 def calc_rewrite(file_path, out_path):
+    """Serialize generated retrieval instructions as JSON."""
+
     new_q, _ = get_query(file_path)
     json_data = json.dumps(new_q)
     with open(out_path, "w") as file:

@@ -1,3 +1,5 @@
+"""Run a legacy batched LLM baseline and evaluate closed-form QA outputs."""
+
 import scipy.stats as stats
 import argparse
 from hyper_simulation.question_answer.vmdit.relation import same_sentences_with_llm
@@ -9,6 +11,8 @@ from tqdm import tqdm
 from hyper_simulation.llm.chat_completion import get_invoke, get_generate
 import numpy as np
 def get_index_number(l, n, mode):
+    """Select retrieval positions using average, Gaussian, or top-ranked sampling."""
+
     result=[]
     if mode == 'average':
         ave=l/n
@@ -38,6 +42,8 @@ def get_index_number(l, n, mode):
     print(result)
     return result
 def llm_evi_ans(evidences, query):
+    """Keep evidence that an LLM judges compatible with the query."""
+
     result=[]
     for evi in evidences:
         try:
@@ -48,21 +54,28 @@ def llm_evi_ans(evidences, query):
             else:
                 result.append(evi)
         except:
+            # Fail open so a transient model error cannot silently discard evidence.
             result.append(evi)
     return result
 from langchain_ollama import ChatOllama
 model = ChatOllama(model="qwen2.5:72b", temperature=0.8, top_p=0.95)
 def call_model(prompts, max_new_tokens=50):
+    """Generate and normalize one answer per prompt as a model batch."""
+
     preds = get_generate(prompts, model)
     preds = [pred.split("\n\n")[0] for pred in preds]
     postprocessed_preds = [postprocess_output(pred) for pred in preds]
     return postprocessed_preds, preds
 def postprocess_output(pred):
+    """Remove the end token and one legacy leading space from a prediction."""
+
     pred = pred.replace("</s>", "")
     if len(pred) > 0 and pred[0] == " ":
         pred = pred[1:]
     return pred
 def main():
+    """Load a baseline dataset, run batched inference, and persist metrics."""
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', type=str,
                         default="meta-llama/Llama-2-7b-chat-hf")
@@ -202,6 +215,7 @@ def main():
         if args.task=='fever' or args.task=='arc_c':
             item["instruction"]=TASK_INST[args.task]+"\n\n### Input:\n" +item["instruction"]
     final_results = []
+    # Full batches and the final remainder follow the same prompt/output contract.
     for idx in tqdm(range(len(input_data) // args.batch_size)):
         batch = input_data[idx*args.batch_size:(idx+1)*args.batch_size]
         processed_batch = [
@@ -243,6 +257,7 @@ def main():
             processed_item.append(item)
         save_file_jsonl(processed_item, args.result_fp)
     else:
+        # Persist enriched input rows so predictions and per-item metrics stay aligned.
         save_file_jsonl(input_data, args.result_fp)
 if __name__ == "__main__":
     main()

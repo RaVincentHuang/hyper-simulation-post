@@ -1,3 +1,5 @@
+"""Cached deterministic sentence-embedding and cosine-similarity helpers."""
+
 import os
 import random
 from sentence_transformers import SentenceTransformer
@@ -7,6 +9,8 @@ from torch import Tensor
 import torch.nn.functional as F
 import numpy as np
 def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
+    """Pool each sequence at its final non-padding token."""
+
     left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
     if left_padding:
         return last_hidden_states[:, -1]
@@ -28,6 +32,8 @@ try:
 except Exception:
     pass
 def init_embedding_model():
+    """Eagerly initialize the configured sentence-transformer model."""
+
     if "Qwen/Qwen3-Embedding-0.6B" not in _model_cache:
         model = SentenceTransformer('Qwen/Qwen3-Embedding-0.6B')
         model.eval()
@@ -40,6 +46,8 @@ def _get_sentence_transformer() -> SentenceTransformer:
         _model_cache["Qwen/Qwen3-Embedding-0.6B"] = model
     return _model_cache["Qwen/Qwen3-Embedding-0.6B"]
 def get_embedding_batch(texts: list[str], batch_size: int=256, cache: None | dict[str, np.ndarray]=None) -> list[np.ndarray]:
+    """Encode texts in batches, reusing caller-supplied normalized vectors."""
+
     model = _get_sentence_transformer()
     if cache is None:
         cache = {}
@@ -56,20 +64,28 @@ def get_embedding_batch(texts: list[str], batch_size: int=256, cache: None | dic
         cache.update(zip(missing_texts, new_embeddings))
     return [cache[t] for t in texts]
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Return cosine similarity for two dense vectors."""
+
     a_norm = a / np.linalg.norm(a)
     b_norm = b / np.linalg.norm(b)
     return float(np.dot(a_norm, b_norm))
 def get_similarity_batch(query: list[str], data: list[str], N: int=8) -> list[float]:
+    """Score the Cartesian product of query and data strings in row-major order."""
+
     query_embeddings = get_embedding_batch(query, N)
     data_embeddings = get_embedding_batch(data, N)
     pairs = [(q_emb, d_emb) for q_emb in query_embeddings for d_emb in data_embeddings]
     similarities = get_cosine_similarity_batch(pairs, is_normalized=True)
     return similarities
 def get_similarity(text1: str, text2: str) -> float:
+    """Encode and compare one text pair."""
+
     emb1 = get_embedding_batch([text1])[0]
     emb2 = get_embedding_batch([text2])[0]
     return cosine_similarity(emb1, emb2)
 def get_cosine_similarity_batch(pairs: list[tuple[np.ndarray, np.ndarray]], is_normalized: bool=False) -> list[float]:
+    """Compute pairwise cosine scores, optionally trusting pre-normalized inputs."""
+
     if not pairs:
         return []
     A_list, B_list = zip(*pairs)

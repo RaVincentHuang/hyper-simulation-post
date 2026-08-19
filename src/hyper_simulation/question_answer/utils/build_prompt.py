@@ -1,3 +1,5 @@
+"""Select and format the prompt template for a QA task."""
+
 from hyper_simulation.llm.prompt.hotpot_qa import HOTPOT_QA_BASE
 from hyper_simulation.llm.prompt.musique import MUSIQUE_QA_HYPER
 from hyper_simulation.llm.prompt.multihop import MULTIHOP_QA_BASE
@@ -10,6 +12,8 @@ from hyper_simulation.llm.prompt.legalbench_corporate_lobbying import LEGALBENCH
 from hyper_simulation.llm.prompt.legalbench_scalr import LEGALBENCH_SCALR_BASE
 from hyper_simulation.llm.prompt.arc import ARC_BASE
 def build_prompt(question: str, context_text: str, task: str = "hotpotqa", context_type: str | None = None) -> str:
+    """Render task-specific context and question text into a model prompt."""
+
     if task == "hotpotqa":
         prompt = HOTPOT_QA_BASE.format(
             context_text=context_text,
@@ -26,6 +30,7 @@ def build_prompt(question: str, context_text: str, task: str = "hotpotqa", conte
             question=question
         )
     elif task == "legalbench":
+        # LegalBench subdatasets share a task name but require distinct instructions.
         if context_type == "contract":
             prompt = QA_CONTRACT_BASE.format(context_text=context_text, question=question)
         elif context_type == "tos":

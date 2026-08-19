@@ -1,3 +1,5 @@
+"""Prompt templates and examples for structured graph extraction."""
+
 from langchain_core.prompts import PromptTemplate
 from langchain_core.prompts import ChatMessagePromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate, AIMessagePromptTemplate
 _graph_building_info_template = """ Your are a graph generator for GraphRAG, you will receive a piece of text, you need to convert the text into a graph and output it in `json` format.

@@ -1,3 +1,5 @@
+"""Build and persist linguistic hypergraphs from text or query instances."""
+
 import hashlib
 import re
 from pathlib import Path
@@ -5,7 +7,6 @@ from typing import List, Optional, Union
 import spacy
 from spacy.tokens import Doc
 from tqdm import tqdm
-from fastcoref import spacy_component
 from hyper_simulation.query_instance import QueryInstance
 from hyper_simulation.hypergraph.hypergraph import Hypergraph as LocalHypergraph
 from hyper_simulation.hypergraph.dependency import Node, LocalDoc, Dependency
@@ -18,6 +19,8 @@ from hyper_simulation.hypergraph.corref import CorrefCluster, mark_corref
 from spacy.symbols import ORTH
 _NLP: Optional[spacy.Language] = None
 def normalize_special_chars(text: str) -> str:
+    """Replace escaped and literal control characters with normalized spaces."""
+
     special_chars = {
         '\\n': ' ',
         '\\r': ' ',
@@ -40,12 +43,20 @@ def normalize_special_chars(text: str) -> str:
     result = re.sub(r' +', ' ', result)
     return result.strip()
 def get_nlp(use_gpu: bool = False) -> spacy.Language:
+    """Return the cached spaCy pipeline, loading fast coreference on first use."""
+
     global _NLP
     if _NLP is None:
         if use_gpu:
             spacy.require_gpu()
         _NLP = spacy.load('en_core_web_trf')
-        if 'fastcoref' not in _NLP.pipe_names:
+        try:
+            import fastcoref  # noqa: F401 - registers the spaCy factory.
+        except ImportError:
+            fastcoref_available = False
+        else:
+            fastcoref_available = True
+        if fastcoref_available and 'fastcoref' not in _NLP.pipe_names:
             local_model_path = "/home/vincent/.cache/huggingface/hub/models--biu-nlp--lingmess-coref/snapshots/fa5d8a827a09388d03adbe9e800c7d8c509c3935"
             device = 'cuda' if use_gpu else 'cpu'
             _NLP.add_pipe('fastcoref', config={ 'model_architecture': 'LingMessCoref', 'model_path': local_model_path, 'device': device})
@@ -55,6 +66,8 @@ def get_nlp(use_gpu: bool = False) -> spacy.Language:
         _NLP.tokenizer.add_special_case(f"{numeral}.", [{ORTH: numeral}, {ORTH: "."}])
     return _NLP
 def text_to_doc(text: str) -> Doc:
+    """Parse text with coreference resolution and fall back to plain spaCy."""
+
     logger = getLogger(__name__)
     nlp = get_nlp()
     if "fastcoref" in nlp.pipe_names:
@@ -77,9 +90,13 @@ def text_to_doc(text: str) -> Doc:
     doc = nlp(text)
     return doc
 def doc_to_hypergraph(doc: Doc, text: str, is_query: bool = False) -> LocalHypergraph:
+    """Convert a parsed document into the production linguistic hypergraph."""
+
     correfs = calc_correfs_str(doc) if hasattr(doc._, "coref_clusters") else set()
     abstractor = TokenEntityAdder("qwen_ontology_mapping.json")
     t1 = time()
+    # Retokenization must precede dependency conversion so every selected span
+    # becomes exactly one node in the downstream graph representation.
     links_to_merge = combine_links(doc)
     with doc.retokenize() as retokenizer:
         for link in links_to_merge:
@@ -111,10 +128,14 @@ def doc_to_hypergraph(doc: Doc, text: str, is_query: bool = False) -> LocalHyper
     hypergraph.original_text = text
     return hypergraph
 def text_to_hypergraph(text: str, is_query: bool = False) -> LocalHypergraph:
+    """Clean and parse text, then return its linguistic hypergraph."""
+
     text = clean_text_for_spacy(text)
     doc = text_to_doc(text)
     return doc_to_hypergraph(doc, text, is_query=is_query)
 def generate_instance_id(query: str) -> str:
+    """Return the historical whitespace-insensitive identifier for a query."""
+
     normalized = ''.join(query.split()).lower()
     return hashlib.md5(normalized.encode('utf-8')).hexdigest()[:16]
 def build_hypergraph_for_query_instance(
@@ -123,6 +144,8 @@ def build_hypergraph_for_query_instance(
     base_dir: Union[str, Path] = "data/hypergraph",
     force_rebuild: bool = False
 ) -> str:
+    """Build one query and its contexts under a deterministic instance directory."""
+
     instance_id = generate_instance_id(query_instance.query)
     instance_dir = Path(base_dir) / dataset_name / instance_id
     instance_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +172,8 @@ def build_hypergraph_for_query_instance(
         json.dump(metadata, f)
     return str(instance_dir.resolve())
 def test_build_hypergraph_for_query_instance(query_instance: QueryInstance) -> tuple[LocalHypergraph, List[LocalHypergraph]]:
+    """Build an instance in memory and record untyped noun mentions for analysis."""
+
     query_hg = text_to_hypergraph(query_instance.query, is_query=True)
     data_list = [text_to_hypergraph(doc_text, is_query=False) for doc_text in query_instance.data]
     with open("missing.txt", "a") as f:
@@ -166,6 +191,8 @@ def build_hypergraph_batch(
     base_dir: Union[str, Path] = "data/hypergraph",
     force_rebuild: bool = False
 ) -> List[str]:
+    """Build and persist a sequence of query instances on the default device."""
+
     instance_dirs = []
     for qi in tqdm(query_instances, desc="Building hypergraphs", position=1, leave=False):
         instance_dir = build_hypergraph_for_query_instance(
@@ -180,6 +207,8 @@ def build_hypergraph_batch_gpu(
     force_rebuild: bool = False,
     batch_size: int = 16
 ) -> List[str]:
+    """Batch spaCy parsing on GPU while preserving per-instance output layout."""
+
     logger = getLogger(__name__)
     tasks = []
     instance_dirs = []

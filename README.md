@@ -1,10 +1,8 @@
 # Hyper Simulation Project
 
-This repository implements and evaluates a question-answering consistency analysis framework based on hypergraph representation and hypergraph simulation.
-This README is written for paper code submission: it explains what each part of the codebase is responsible for.
+This repository implements and evaluates a question-answering consistency analysis framework based on hypergraph representation and hypergraph simulation. This README is written for paper code submission: it explains what each part of the codebase is responsible for.
 
 ## 1. What This Repository Does
-
 The core idea is to convert questions and candidate documents into hypergraph structures, then use structural matching (hyper simulation) to determine whether evidence supports the question semantics. The repository also includes multiple baselines and multi-dataset evaluation pipelines.
 
 The project has three layers:
@@ -23,7 +21,6 @@ The project has three layers:
 - scripts/: shell wrappers for frequent batch operations
 - pixi.toml: environment, dependencies, and task command definitions
 - pyproject.toml: Python package metadata
-- remove_comment.py: auxiliary text-processing script
 
 ## 3. Core Code Areas
 

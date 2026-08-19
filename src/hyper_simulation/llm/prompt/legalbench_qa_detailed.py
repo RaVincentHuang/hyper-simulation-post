@@ -1,3 +1,5 @@
+"""Task-specific prompts for detailed LegalBench QA datasets."""
+
 QA_CONTRACT_BASE = """### Contract Clause:
 {context_text}
 {question}

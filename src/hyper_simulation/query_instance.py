@@ -1,7 +1,11 @@
+"""Normalized query-instance records and dataset-specific input adapters."""
+
 from dataclasses import dataclass
 from typing import Any, List, Union, Dict, Optional
 @dataclass
 class QueryInstance:
+    """One query, its candidate contexts, answers, labels, and diagnostic logs."""
+
     query: str
     data: list[str]
     answers: list[str]
@@ -14,22 +18,34 @@ class QueryInstance:
     d_match_logs: Union[List[str], None] = None
     context_type: str = None
     def add_simulation_log(self, log: str, data_id: int) -> None:
+        """Append a simulation trace tagged with its context index."""
+
         if self.simulation_logs is None:
             self.simulation_logs = []
         self.simulation_logs.append(f"[{data_id}] {log}\n")
     def add_denial_log(self, log: str, data_id: int) -> None:
+        """Append a denial trace tagged with its context index."""
+
         if self.denial_logs is None:
             self.denial_logs = []
         self.denial_logs.append(f"[{data_id}] {log}\n")
     def add_semantic_cluster_log(self, log: str, data_id: int) -> None:
+        """Append an HC trace tagged with its context index."""
+
         if self.semantic_cluster_logs is None:
             self.semantic_cluster_logs = []
         self.semantic_cluster_logs.append(f"[{data_id}] {log}\n")
     def add_d_match_log(self, log: str, data_id: int) -> None:
+        """Append a D-match trace tagged with its context index."""
+
         if self.d_match_logs is None:
             self.d_match_logs = []
         self.d_match_logs.append(f"[{data_id}] {log}\n")
 def build_query_instance_for_task(item: Dict[str, Any], task: str) -> QueryInstance:
+    """Normalize one supported dataset row into the shared query schema."""
+
+    # Each branch preserves its source dataset's support-label convention while
+    # emitting the same per-context ``ground_truth`` shape for downstream code.
     if task == "hotpotqa":
         supporting_facts = item.get('supporting_facts', {})
         ground_truths = []

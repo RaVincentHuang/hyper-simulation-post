@@ -1,12 +1,30 @@
+"""Map spaCy spans and tokens onto the project's coarse entity ontology."""
+
 import json
 import spacy
 from nltk.corpus import wordnet as wn
-from pywsd.lesk import simple_lesk, cosine_lesk
 from spacy.tokens import Token, Span
 from hyper_simulation.hypergraph.entity import ENT
 from hyper_simulation.hypergraph.linguistic import Entity
 from typing import Iterable
+
+
+def _cosine_lesk(context: str, word: str, *, pos):
+    """Run optional PyWSD disambiguation without import-time corpus loading."""
+
+    try:
+        from pywsd.lesk import cosine_lesk
+    except (ImportError, LookupError):
+        return None
+    try:
+        return cosine_lesk(context, word, pos=pos)
+    except LookupError:
+        return None
+
+
 class TokenEntityAdder:
+    """Assign coarse entity types using NER labels and WordNet hypernyms."""
+
     def __init__(self, path: str):
         self.char_index_to_entity: dict[int, ENT] = {}
         self.mapping = {}
@@ -23,7 +41,7 @@ class TokenEntityAdder:
         if not wn_pos:
             return []
         try:
-            synset = cosine_lesk(doc.text, span.text, pos=wn_pos)
+            synset = _cosine_lesk(doc.text, span.text, pos=wn_pos)
         except Exception:
             synset = None
         if not synset:
@@ -41,7 +59,7 @@ class TokenEntityAdder:
         if not wn_pos:
             return []
         try:
-            synset = cosine_lesk(doc.text, token.text, pos=wn_pos)
+            synset = _cosine_lesk(doc.text, token.text, pos=wn_pos)
         except Exception:
             synset = None
         if not synset:
@@ -55,6 +73,10 @@ class TokenEntityAdder:
             return [synset.name()]
         return [node.name() for node in paths[0]]
     def set_entity_from_spans(self, spans: list[Span], doc):
+        """Resolve and cache an entity type for every selected span start."""
+
+        # Explicit spaCy NER labels take precedence; WordNet abstraction is the
+        # fallback only for spans that have no named-entity annotation.
         for span in spans:
             if span.label_:
                 self.char_index_to_entity[span.start_char] = ENT.from_entity(Entity[span.label_])
@@ -95,8 +117,12 @@ class TokenEntityAdder:
                 continue
             self.char_index_to_entity[span.start_char] = ENT.NOT_ENT
     def get_entity_for_char_index(self, char_index: int) -> ENT | None:
+        """Return the cached entity type at a span's starting character."""
+
         return self.char_index_to_entity.get(char_index, None)
     def get_entity_for_token(self, token: Token, doc) -> ENT | None:
+        """Infer a coarse entity type for one token from its hypernym path."""
+
         synset = self._get_contextual_synset_path_token(token, doc)
         is_concept = False
         for syn in reversed(synset):

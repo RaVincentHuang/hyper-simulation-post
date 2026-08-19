@@ -1,4 +1,9 @@
 
+//! Cached synthetic label predicates used by examples and benchmarks.
+//!
+//! These helpers are not part of the HyperMatch semantic estimators; they
+//! provide repeatable match relations for exercising the generic algorithms.
+
 use std::{collections::{HashMap, HashSet}, hash::Hash};
 use rand_pcg::Pcg64;
 use lazy_static::lazy_static;
@@ -105,6 +110,8 @@ impl Drop for LSave {
 }
 
 pub fn l_predicate_node(x: &Node, y: &Node, p: f64) -> bool {
+    // Delegate to the cached set predicate so node and hyperedge tests share
+    // exactly the same stochastic label semantics.
     l_save.write().unwrap().l_predicate_node(x, y, p)
 }
 

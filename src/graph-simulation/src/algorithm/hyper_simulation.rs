@@ -1,29 +1,50 @@
+//! Hyper Simulation fixed-point algorithms.
+//!
+//! The primary solver starts from the non-conflict relation `h_v` and applies
+//! two invariants until no pair can be removed: every Delta anchor occurs in
+//! each associated D-match, and every D-match is contained in the current
+//! relation.  The indexed implementation maintains reverse dependency maps
+//! and a worklist; the naive implementation remains available for parity
+//! testing.
+
+use log::info;
 use std::collections::{HashMap, HashSet, VecDeque};
-use log::{info, warn};
 // use std::fs::File;
 // use std::io::{self, Write};
 
-
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::error::Error;
 
+use graph_base::interfaces::{
+    edge::Hyperedge,
+    graph::SingleId,
+    hypergraph::{ContainedHyperedge, Hypergraph},
+    typed::Typed,
+};
 
-use graph_base::interfaces::{edge::{DirectedHyperedge, Hyperedge}, graph::SingleId, hypergraph::{ContainedDirectedHyperedge, ContainedHyperedge, DirectedHypergraph, Hypergraph}, typed::{Type, Typed}};
-
-use crate::{algorithm::simulation, utils::logger::init_global_logger_once};
+use crate::utils::logger::init_global_logger_once;
 use crate::utils::logger::TraceLog;
 
+/// Supplies the initial label-compatible relation used by legacy solvers.
 pub trait LMatch {
     type Edge;
     // fn l_match(&'a self, e: &'a Self::Edge, e_prime: &'a Self::Edge) -> HashMap<&'a Self::Node, &'a HashSet<&'a Self::Node>>;
     fn new() -> Self;
-    fn l_match_with_node_mut(&mut self, e: &Self::Edge, e_prime: &Self::Edge, u: usize) -> &HashSet<usize>;
+    fn l_match_with_node_mut(
+        &mut self,
+        e: &Self::Edge,
+        e_prime: &Self::Edge,
+        u: usize,
+    ) -> &HashSet<usize>;
     fn l_match_with_node(&self, e: &Self::Edge, e_prime: &Self::Edge, u: usize) -> &HashSet<usize>;
     fn dom(&self, e: &Self::Edge, e_prime: &Self::Edge) -> impl Iterator<Item = &usize>;
 }
 
+/// One logical hyperedge cluster identified independently of its Delta anchors.
+///
+/// `SematicCluster` retains the historical misspelling for ABI compatibility.
 #[derive(Hash)]
 pub struct SematicCluster<'a, E: Hyperedge> {
     id: usize,
@@ -31,12 +52,8 @@ pub struct SematicCluster<'a, E: Hyperedge> {
 }
 
 impl<'a, E: Hyperedge> SematicCluster<'a, E> {
-
     pub fn new(id: usize, hyperedges: Vec<&'a E>) -> Self {
-        Self {
-            id,
-            hyperedges,
-        }
+        Self { id, hyperedges }
     }
 
     pub fn id(&self) -> usize {
@@ -48,34 +65,90 @@ impl<'a, E: Hyperedge> SematicCluster<'a, E> {
     }
 }
 
+/// Maps a candidate node pair `(u, v)` to all HC pairs constraining it.
 pub trait Delta<'a> {
     type Node;
     type Edge: Hyperedge;
-    fn get_sematic_clusters(&'a self, u: &'a Self::Node, v: &'a Self::Node) -> &'a Vec<(SematicCluster<'a, Self::Edge>, SematicCluster<'a, Self::Edge>)>;
+    fn get_sematic_clusters(
+        &'a self,
+        u: &'a Self::Node,
+        v: &'a Self::Node,
+    ) -> &'a Vec<(
+        SematicCluster<'a, Self::Edge>,
+        SematicCluster<'a, Self::Edge>,
+    )>;
 }
 
+/// Returns the frozen semantic-role relation for one accepted HC pair.
 pub trait DMatch<'a> {
     type Edge: Hyperedge;
     // fn d_match_mut(&mut self, e: &SematicCluster<'a, Self::Edge>, e_prime: &SematicCluster<'a, Self::Edge>) -> &HashSet<(usize, usize)>;
-    fn d_match(&self, e: &SematicCluster<'a, Self::Edge>, e_prime: &SematicCluster<'a, Self::Edge>) -> &HashSet<(usize, usize)>;
+    fn d_match(
+        &self,
+        e: &SematicCluster<'a, Self::Edge>,
+        e_prime: &SematicCluster<'a, Self::Edge>,
+    ) -> &HashSet<(usize, usize)>;
 }
 
+/// Structural and label predicates required by the simulation algorithms.
 pub trait LPredicate<'a>: Hypergraph<'a> {
     fn l_predicate_node(&'a self, u: &'a Self::Node, v: &'a Self::Node) -> bool;
     fn l_predicate_edge(&'a self, e: &'a Self::Edge, e_prime: &'a Self::Edge) -> bool;
     fn l_predicate_set(&'a self, x: &HashSet<&'a Self::Node>, y: &HashSet<&'a Self::Node>) -> bool;
 }
 
+/// Greatest-fixed-point algorithms for graph and hypergraph simulation.
 pub trait HyperSimulation<'a>: Hypergraph<'a> {
-    fn get_simulation_fixpoint(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_simulation_recursive(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_simulation_naive(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_soft_simulation_naive(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_hyper_simulation_naive(&'a self, other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_hyper_simulation_effect(&'a self, other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_hyper_simulation_effect_pass_by(&'a self, other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>, type_same_lookup: &HashMap<&'a Self::Node, HashSet<&'a Self::Node>>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
-    fn get_hyper_simulation_effect_by_id(&'a self, hc_map: &HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>>) -> HashSet<(usize, usize)>;
-    fn get_hyper_simulation_strict(&'a self, other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_simulation_fixpoint(
+        &'a self,
+        _other: &'a Self,
+        _l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_simulation_recursive(
+        &'a self,
+        _other: &'a Self,
+        _l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_simulation_naive(
+        &'a self,
+        other: &'a Self,
+        l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_soft_simulation_naive(
+        &'a self,
+        other: &'a Self,
+        l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_hyper_simulation_naive(
+        &'a self,
+        other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    /// Compute Hyper Simulation with reverse dependency indices and a worklist.
+    fn get_hyper_simulation_effect(
+        &'a self,
+        other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_hyper_simulation_effect_pass_by(
+        &'a self,
+        other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+        type_same_lookup: &HashMap<&'a Self::Node, HashSet<&'a Self::Node>>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
+    fn get_hyper_simulation_effect_by_id(
+        &'a self,
+        hc_map: &HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>>,
+    ) -> HashSet<(usize, usize)>;
+    fn get_hyper_simulation_strict(
+        &'a self,
+        other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
 }
 // struct MultiWriter<W1: Write, W2: Write> {
 //     w1: W1,
@@ -94,26 +167,38 @@ pub trait HyperSimulation<'a>: Hypergraph<'a> {
 //     }
 // }
 
-
-impl<'a, H> HyperSimulation<'a> for H 
-where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
-    fn get_simulation_fixpoint(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
+impl<'a, H> HyperSimulation<'a> for H
+where
+    H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a>,
+{
+    fn get_simulation_fixpoint(
+        &'a self,
+        _other: &'a Self,
+        _l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         todo!()
     }
 
-    fn get_simulation_recursive(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
+    fn get_simulation_recursive(
+        &'a self,
+        _other: &'a Self,
+        _l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         todo!()
     }
 
-    fn get_simulation_naive(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
-        
+    fn get_simulation_naive(
+        &'a self,
+        other: &'a Self,
+        l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         // let log_file = File::create("hyper-simulation.log")
         //     .expect("Failed to create log file");
         // let multi_writer = MultiWriter {
         //     w1: log_file,
         //     w2: io::stdout(),
         // };
-        
+
         // env_logger::Builder::new()
         //     .target(env_logger::Target::Pipe(Box::new(multi_writer)))
         //     .init();
@@ -125,42 +210,56 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         let self_contained_hyperedge = self.get_hyperedges_list();
         let other_contained_hyperedge = other.get_hyperedges_list();
 
-        let mut simulation: HashMap<&Self::Node, HashSet<&Self::Node>> = self.nodes().map(|u| {
-            let res = other.nodes().filter(|v| {
-                if self.type_same(u, *v) {
-                    // For each e, compute the union of l_match(u) over all matching e_prime,
-                    // then take the intersection across all e.
-                    let mut l_match_intersection: Option<HashSet<usize>> = None;
-                    for e in self.contained_hyperedges(&self_contained_hyperedge, u) {
-                        let mut l_match_union: HashSet<usize> = HashSet::new();
-                        for e_prime in other.contained_hyperedges(&other_contained_hyperedge, v) {
-                            if self.l_predicate_edge(e, e_prime) {
-                                // let l_match = self.l_match(e, e_prime);
-                                let id_set = l_match.l_match_with_node(e, e_prime, u.id());
-                                l_match_union = l_match_union.union(&id_set).copied().collect();
+        let mut simulation: HashMap<&Self::Node, HashSet<&Self::Node>> = self
+            .nodes()
+            .map(|u| {
+                let res = other
+                    .nodes()
+                    .filter(|v| {
+                        if self.type_same(u, *v) {
+                            // For each e, compute the union of l_match(u) over all matching e_prime,
+                            // then take the intersection across all e.
+                            let mut l_match_intersection: Option<HashSet<usize>> = None;
+                            for e in self.contained_hyperedges(&self_contained_hyperedge, u) {
+                                let mut l_match_union: HashSet<usize> = HashSet::new();
+                                for e_prime in
+                                    other.contained_hyperedges(&other_contained_hyperedge, v)
+                                {
+                                    if self.l_predicate_edge(e, e_prime) {
+                                        // let l_match = self.l_match(e, e_prime);
+                                        let id_set = l_match.l_match_with_node(e, e_prime, u.id());
+                                        l_match_union =
+                                            l_match_union.union(&id_set).copied().collect();
+                                    }
+                                }
+                                l_match_intersection = match l_match_intersection {
+                                    Some(ref acc) => {
+                                        Some(acc.intersection(&l_match_union).copied().collect())
+                                    }
+                                    None => Some(l_match_union),
+                                };
+                            }
+                            if let Some(l_match_intersection) = l_match_intersection {
+                                if l_match_intersection.contains(&v.id()) {
+                                    return true;
+                                }
                             }
                         }
-                        l_match_intersection = match l_match_intersection {
-                            Some(ref acc) => Some(acc.intersection(&l_match_union).copied().collect()),
-                            None => Some(l_match_union),
-                        };
-                    }
-                    if let Some(l_match_intersection) = l_match_intersection {
-                        if l_match_intersection.contains(&v.id()){
-                            return true;
-                        }
-                    }
-                }
-                false
-            }).collect();
-            (u, res)
-        }).collect();
+                        false
+                    })
+                    .collect();
+                (u, res)
+            })
+            .collect();
 
         info!("END Initial, sim: is ");
         for (u, v_set) in &simulation {
-            info!("\tsim({}) = {:?}", u.id(), v_set.iter().map(|v| v.id()).collect::<Vec<_>>());
+            info!(
+                "\tsim({}) = {:?}",
+                u.id(),
+                v_set.iter().map(|v| v.id()).collect::<Vec<_>>()
+            );
         }
-        
 
         let mut changed = true;
         while changed {
@@ -177,13 +276,20 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                         for e_prime in other.contained_hyperedges(&other_contained_hyperedge, v) {
                             if self.l_predicate_edge(e, e_prime) {
                                 if l_match.dom(e, e_prime).all(|u_prime| {
-                                    l_match.l_match_with_node(e, e_prime, u_prime.clone()).iter().map(|id| {other.get_node_by_id(*id)}).any(|v_prime| {
-                                        if let Some(v_prime) = v_prime {
-                                            return simulation.get(u).unwrap().contains(v_prime);
-                                        } else {
-                                            return false;
-                                        }
-                                    })
+                                    l_match
+                                        .l_match_with_node(e, e_prime, u_prime.clone())
+                                        .iter()
+                                        .map(|id| other.get_node_by_id(*id))
+                                        .any(|v_prime| {
+                                            if let Some(v_prime) = v_prime {
+                                                return simulation
+                                                    .get(u)
+                                                    .unwrap()
+                                                    .contains(v_prime);
+                                            } else {
+                                                return false;
+                                            }
+                                        })
                                 }) {
                                     info!("Keeping {} -> {}", u.id(), v.id());
                                     _delete = false;
@@ -194,7 +300,7 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                     }
                     if _delete {
                         info!("Deleting {} -> {}", u.id(), v.id());
-                        need_delete.push(v.clone());
+                        need_delete.push(*v);
                     }
                 }
                 for v in need_delete {
@@ -207,7 +313,11 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         simulation
     }
 
-    fn get_soft_simulation_naive(&'a self, other: &'a Self, l_match: &mut impl LMatch<Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
+    fn get_soft_simulation_naive(
+        &'a self,
+        other: &'a Self,
+        l_match: &mut impl LMatch<Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         init_global_logger_once("hyper-simulation.log");
 
         info!("Start Naive Hyper Simulation");
@@ -215,44 +325,57 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         // let self_contained_hyperedge = self.get_hyperedges_list();
         // let other_contained_hyperedge = other.get_hyperedges_list();
 
-        let mut l_predicate_edges: HashMap<(usize, usize), Vec<(&Self::Edge, &Self::Edge)>> = HashMap::new();
+        let mut l_predicate_edges: HashMap<(usize, usize), Vec<(&Self::Edge, &Self::Edge)>> =
+            HashMap::new();
         for e in self.hyperedges() {
             for e_prime in other.hyperedges() {
                 if self.l_predicate_edge(e, e_prime) {
                     for u in e.id_set() {
                         for v in e_prime.id_set() {
-                            l_predicate_edges.entry((u, v)).or_default().push((e, e_prime));
+                            l_predicate_edges
+                                .entry((u, v))
+                                .or_default()
+                                .push((e, e_prime));
                         }
                     }
                 }
             }
         }
 
-        let mut simulation: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = self.nodes().map(|u| {
-            let res = other.nodes().filter(|v| {
-                if self.type_same(u, *v) {
-                    if let Some(edge_pairs) = l_predicate_edges.get(&(u.id(), v.id())) {
-                        for (e, e_prime) in edge_pairs {
-                            let id_set = l_match.l_match_with_node(e, e_prime, u.id());
-                            if !id_set.contains(&v.id()) {
-                                return false;
+        let mut simulation: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = self
+            .nodes()
+            .map(|u| {
+                let res = other
+                    .nodes()
+                    .filter(|v| {
+                        if self.type_same(u, *v) {
+                            if let Some(edge_pairs) = l_predicate_edges.get(&(u.id(), v.id())) {
+                                for (e, e_prime) in edge_pairs {
+                                    let id_set = l_match.l_match_with_node(e, e_prime, u.id());
+                                    if !id_set.contains(&v.id()) {
+                                        return false;
+                                    }
+                                }
+                                return true;
+                            } else {
+                                return true;
                             }
                         }
-                        return true;
-                    } else {
-                        return true;
-                    }
-                }
-                false
-            }).collect();
-            (u, res)
-        }).collect();
+                        false
+                    })
+                    .collect();
+                (u, res)
+            })
+            .collect();
 
         info!("END Initial, sim: is ");
         for (u, v_set) in &simulation {
-            info!("\tsim({}) = {:?}", u.id(), v_set.iter().map(|v| v.id()).collect::<Vec<_>>());
+            info!(
+                "\tsim({}) = {:?}",
+                u.id(),
+                v_set.iter().map(|v| v.id()).collect::<Vec<_>>()
+            );
         }
-        
 
         let mut changed = true;
         while changed {
@@ -266,13 +389,17 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                     if let Some(edge_pairs) = l_predicate_edges.get(&(u.id(), v.id())) {
                         for (e, e_prime) in edge_pairs {
                             if l_match.dom(e, e_prime).all(|u_prime| {
-                                l_match.l_match_with_node(e, e_prime, u_prime.clone()).iter().map(|id| {other.get_node_by_id(*id)}).any(|v_prime| {
-                                    if let Some(v_prime) = v_prime {
-                                        return simulation.get(u).unwrap().contains(v_prime);
-                                    } else {
-                                        return false;
-                                    }
-                                })
+                                l_match
+                                    .l_match_with_node(e, e_prime, u_prime.clone())
+                                    .iter()
+                                    .map(|id| other.get_node_by_id(*id))
+                                    .any(|v_prime| {
+                                        if let Some(v_prime) = v_prime {
+                                            return simulation.get(u).unwrap().contains(v_prime);
+                                        } else {
+                                            return false;
+                                        }
+                                    })
                             }) {
                                 info!("Keeping {} -> {}", u.id(), v.id());
                                 _delete = true;
@@ -283,7 +410,7 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
 
                     if _delete {
                         info!("Deleting {} -> {}", u.id(), v.id());
-                        need_delete.push(v.clone());
+                        need_delete.push(*v);
                     }
                 }
 
@@ -295,39 +422,54 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         }
 
         simulation
-
     }
 
-    fn get_hyper_simulation_naive(&'a self, other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
+    fn get_hyper_simulation_naive(
+        &'a self,
+        other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         init_global_logger_once("logs/hyper-simulation.log");
         let mut hs_trace = HyperSimulationTrace::new();
-        let mut simulation: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = self.nodes().map(|u| {
-            let res = other.nodes().filter(|v| {
-                if self.type_same(u, *v) {
-                    let sematic_clusters = delta.get_sematic_clusters(u, v);
-                    for (cluster_u, cluster_v) in sematic_clusters {
-                        let d_match_set = d_match.d_match(cluster_u, cluster_v);
-                        if !d_match_set.contains(&(u.id(), v.id())) {
-                            // Add the trace that nodes (u, v) are deleted by the `sematic_clusters`
-                            hs_trace.add_base_event(cluster_u.id, d_match_set.clone());
-                            return false;
+        let mut simulation: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = self
+            .nodes()
+            .map(|u| {
+                let res = other
+                    .nodes()
+                    .filter(|v| {
+                        if self.type_same(u, *v) {
+                            let sematic_clusters = delta.get_sematic_clusters(u, v);
+                            for (cluster_u, cluster_v) in sematic_clusters {
+                                let d_match_set = d_match.d_match(cluster_u, cluster_v);
+                                if !d_match_set.contains(&(u.id(), v.id())) {
+                                    // Add the trace that nodes (u, v) are deleted by the `sematic_clusters`
+                                    hs_trace.add_base_event(cluster_u.id, d_match_set.clone());
+                                    return false;
+                                }
+                            }
+                            return true;
                         }
-                    }
-                    return true;
-                }
-                false
-            }).collect();
-            (u, res)
-        }).collect();
+                        false
+                    })
+                    .collect();
+                (u, res)
+            })
+            .collect();
 
         info!("END Initial, raw-sim: is ");
         for (u, v_set) in &simulation {
-            info!("\tsim({}) = {:?}", u.id(), v_set.iter().map(|v| v.id()).collect::<Vec<_>>());
+            info!(
+                "\tsim({}) = {:?}",
+                u.id(),
+                v_set.iter().map(|v| v.id()).collect::<Vec<_>>()
+            );
         }
 
-        let mut simulation_by_id: HashSet<(usize, usize)> = simulation.iter().flat_map(|(u, v_set)| {
-            v_set.iter().map(move |v| (u.id(), v.id()))
-        }).collect();
+        let mut simulation_by_id: HashSet<(usize, usize)> = simulation
+            .iter()
+            .flat_map(|(u, v_set)| v_set.iter().map(move |v| (u.id(), v.id())))
+            .collect();
 
         let mut changed = true;
         while changed {
@@ -345,7 +487,8 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                         if !d_relation.is_subset(&simulation_by_id) {
                             info!("Deleting {} -> {}", u.id(), v.id());
                             // Add the trace that nodes (u, v) are deleted by the `sematic_clusters`
-                            let uncoverd: HashSet<(usize, usize)> = d_relation.difference(&simulation_by_id).copied().collect();
+                            let uncoverd: HashSet<(usize, usize)> =
+                                d_relation.difference(&simulation_by_id).copied().collect();
                             hs_trace.add_derivation_event(cluster_u.id, uncoverd);
                             _delete = true;
                             break;
@@ -353,7 +496,7 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                     }
 
                     if _delete {
-                        need_delete.push(v.clone());
+                        need_delete.push(*v);
                     }
                 }
 
@@ -365,47 +508,74 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        hs_trace.store_trace_file("logs/hyper_simulation.trace").unwrap();
+        hs_trace
+            .store_trace_file("logs/hyper_simulation.trace")
+            .unwrap();
 
         return simulation;
     }
 
-    fn get_hyper_simulation_strict(&'a self, other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
+    fn get_hyper_simulation_strict(
+        &'a self,
+        other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         init_global_logger_once("logs/hyper-simulation.log");
         let mut hs_trace = HyperSimulationTrace::new();
-        let mut simulation: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = self.nodes().map(|u| {
-            let res = other.nodes().filter(|v| {
-                if self.type_same(u, *v) {
-                    let sematic_clusters = delta.get_sematic_clusters(u, v);
-                    // Highlight!
-                    if sematic_clusters.len() == 0 {
-                        info!("Deleting {} -> {} because no sematic cluster", u.id(), v.id());
-                        return false;
-                    }
-                    info!("Checking {} -> {}, sematic clusters size: {}", u.id(), v.id(), sematic_clusters.len());
-                    for (cluster_u, cluster_v) in sematic_clusters {
-                        let d_match_set = d_match.d_match(cluster_u, cluster_v);
-                        if !d_match_set.contains(&(u.id(), v.id())) {
-                            // Add the trace that nodes (u, v) are deleted by the `sematic_clusters`
-                            hs_trace.add_base_event(cluster_u.id, d_match_set.clone());
-                            return false;
+        let mut simulation: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = self
+            .nodes()
+            .map(|u| {
+                let res = other
+                    .nodes()
+                    .filter(|v| {
+                        if self.type_same(u, *v) {
+                            let sematic_clusters = delta.get_sematic_clusters(u, v);
+                            // Highlight!
+                            if sematic_clusters.len() == 0 {
+                                info!(
+                                    "Deleting {} -> {} because no sematic cluster",
+                                    u.id(),
+                                    v.id()
+                                );
+                                return false;
+                            }
+                            info!(
+                                "Checking {} -> {}, sematic clusters size: {}",
+                                u.id(),
+                                v.id(),
+                                sematic_clusters.len()
+                            );
+                            for (cluster_u, cluster_v) in sematic_clusters {
+                                let d_match_set = d_match.d_match(cluster_u, cluster_v);
+                                if !d_match_set.contains(&(u.id(), v.id())) {
+                                    // Add the trace that nodes (u, v) are deleted by the `sematic_clusters`
+                                    hs_trace.add_base_event(cluster_u.id, d_match_set.clone());
+                                    return false;
+                                }
+                            }
+                            return true;
                         }
-                    }
-                    return true;
-                }
-                false
-            }).collect();
-            (u, res)
-        }).collect();
+                        false
+                    })
+                    .collect();
+                (u, res)
+            })
+            .collect();
 
         info!("END Initial, raw-sim: is ");
         for (u, v_set) in &simulation {
-            info!("\tsim({}) = {:?}", u.id(), v_set.iter().map(|v| v.id()).collect::<Vec<_>>());
+            info!(
+                "\tsim({}) = {:?}",
+                u.id(),
+                v_set.iter().map(|v| v.id()).collect::<Vec<_>>()
+            );
         }
 
-        let mut simulation_by_id: HashSet<(usize, usize)> = simulation.iter().flat_map(|(u, v_set)| {
-            v_set.iter().map(move |v| (u.id(), v.id()))
-        }).collect();
+        let mut simulation_by_id: HashSet<(usize, usize)> = simulation
+            .iter()
+            .flat_map(|(u, v_set)| v_set.iter().map(move |v| (u.id(), v.id())))
+            .collect();
 
         let mut changed = true;
         while changed {
@@ -423,7 +593,8 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                         if !d_relation.is_subset(&simulation_by_id) {
                             info!("Deleting {} -> {}", u.id(), v.id());
                             // Add the trace that nodes (u, v) are deleted by the `sematic_clusters`
-                            let uncoverd: HashSet<(usize, usize)> = d_relation.difference(&simulation_by_id).copied().collect();
+                            let uncoverd: HashSet<(usize, usize)> =
+                                d_relation.difference(&simulation_by_id).copied().collect();
                             hs_trace.add_derivation_event(cluster_u.id, uncoverd);
                             _delete = true;
                             break;
@@ -431,7 +602,7 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                     }
 
                     if _delete {
-                        need_delete.push(v.clone());
+                        need_delete.push(*v);
                     }
                 }
 
@@ -443,7 +614,9 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        hs_trace.store_trace_file("logs/hyper_simulation.trace").unwrap();
+        hs_trace
+            .store_trace_file("logs/hyper_simulation.trace")
+            .unwrap();
 
         return simulation;
     }
@@ -454,24 +627,27 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
         d_match: &impl DMatch<'a, Edge = Self::Edge>,
     ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
-
         init_global_logger_once("logs/hyper-simulation.log");
 
-        // 建立 ID 到节点的映射，方便最后构造返回结果
+        // Keep id-to-node maps so the id-based worklist can be converted back
+        // to the graph's borrowed-node representation at the end.
         let mut id_to_u: HashMap<usize, &'a Self::Node> = HashMap::new();
         let mut id_to_v: HashMap<usize, &'a Self::Node> = HashMap::new();
 
-        // 存储节点对与其对应的所有的 Semantic Clusters (HC) 及 D-match 结果
-        let mut hc_map: HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>> = HashMap::new();
-        
-        // Pi: 当前满足 Hyper Simulation 条件的 (u.id(), v.id()) 集合
+        // HC dependencies indexed by their Delta anchor pair.  One logical HC
+        // may be associated with several anchors by the Python binding.
+        let mut hc_map: HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>> =
+            HashMap::new();
+
+        // Pi is the current candidate Hyper Simulation relation.
         let mut pi: HashSet<(usize, usize)> = HashSet::new();
 
         // ==========================================
         // Phase 1: Declarative Initialization
         // ==========================================
-        
-        // 1. 初始化 Pi 并获取 HC 和 D-match
+
+        // Initialize Pi from h_v/type compatibility and freeze all HC/D-match
+        // dependencies before any deletion is performed.
         for u in self.nodes() {
             id_to_u.insert(u.id(), u);
             for v in other.nodes() {
@@ -487,10 +663,11 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                         let cv_id = cluster_v.id;
                         let d_match_set = d_match.d_match(cluster_u, cluster_v);
 
-                        // 条件 2.a: (u, v) 必须在 D-match 中
+                        // Anchor-membership invariant: every HC registered for
+                        // this pair must explicitly contain it in D-match.
                         if !d_match_set.contains(&(u.id(), v.id())) {
                             valid = false;
-                            break; // 只要有一个 cluster 失败，(u,v) 就不可能在 Pi 中
+                            break; // All registered HCs are conjunctive dependencies.
                         }
                         local_clusters.push(((cu_id, cv_id), d_match_set.clone()));
                     }
@@ -503,25 +680,30 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("完成了 Pi 的初始化和 HC、D-match 的获取，Pi 大小: {}", pi.len());
+        info!(
+            "Initialized Pi and frozen HC/D-match; Pi size: {}",
+            pi.len()
+        );
 
-        // A_cluster 对应的 D-match 缓存，避免重复计算
-        let mut a_cluster_d_match: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
-        
-        // 依赖索引构建:
-        // D_cluster[(Cu, Cv)] -> { (u, v) \in Pi } 
+        // Cache one D-match per logical HC pair.
+        let mut a_cluster_d_match: HashMap<(usize, usize), HashSet<(usize, usize)>> =
+            HashMap::new();
+
+        // Reverse dependency indices:
+        // D_cluster[(Cu, Cv)] -> Delta anchors that require this HC.
         let mut d_cluster: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
-        // D_pair[(u', v')] -> { (Cu, Cv) \in A_cluster }
+        // D_pair[(u', v')] -> HCs whose D-match requires this node pair.
         let mut d_pair: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
 
         for (&(u_id, v_id), clusters) in &hc_map {
             for ((cu_id, cv_id), d_match_set) in clusters {
                 let c_pair = (*cu_id, *cv_id);
-                
-                // 填充 D_cluster
+
+                // Record every anchor associated with the logical HC.
                 d_cluster.entry(c_pair).or_default().insert((u_id, v_id));
 
-                // 如果这是第一次遇到这个簇对，填充 D_pair
+                // The first encounter freezes the HC's D-match and reverse
+                // pair dependencies. Later anchors reuse the same HC id.
                 if !a_cluster_d_match.contains_key(&c_pair) {
                     a_cluster_d_match.insert(c_pair, d_match_set.clone());
 
@@ -532,20 +714,20 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("1. 初始化 Pi 并获取 HC 和 D-match");
+        info!("Built HC and D-match dependency indices");
 
-        // 2. 初始化 V_C (Valid Clusters)
+        // V_C contains HCs whose complete D-match is present in the initial Pi.
         let mut v_c: HashSet<(usize, usize)> = HashSet::new();
         for (c_pair, d_match_set) in &a_cluster_d_match {
-            // 条件 2.b: D-match 的所有元素都必须在当前的 Pi 中
+            // D-match closure invariant: every required pair must survive in Pi.
             if d_match_set.is_subset(&pi) {
                 v_c.insert(*c_pair);
             }
         }
 
-        info!("2. 初始化 V_C (Valid Clusters)");
+        info!("Initialized valid HC set V_C");
 
-        // 3. 找出失效的 (u, v) 加入队列 Q
+        // Seed the worklist with anchors that depend on an invalid HC.
         let mut q: VecDeque<(usize, usize)> = VecDeque::new();
         let mut pi_retained = pi.clone();
 
@@ -561,26 +743,26 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
 
             if !all_in_vc {
-                q.push_back((u_id, v_id));      // 加入 Worklist
+                q.push_back((u_id, v_id)); // enqueue once
                 pi_retained.remove(&(u_id, v_id)); // Pi = Pi \ Q
             }
         }
         pi = pi_retained;
 
-        info!("3. 找出失效的 (u, v) 加入队列 Q");
+        info!("Seeded invalid anchor worklist");
 
         // ==========================================
         // Phase 2: Cascade deletions via the queue
         // ==========================================
         while let Some((up_id, vp_id)) = q.pop_front() {
-            // 获取所有依赖于已删除节点对 (u', v') 的簇对 (Cu, Cv)
+            // A removed pair invalidates every HC whose D-match needs it.
             if let Some(dependent_clusters) = d_pair.get(&(up_id, vp_id)) {
                 for c_pair in dependent_clusters {
-                    // 如果簇对仍然被认为是有效的，现在它失效了
+                    // Each HC transitions from valid to invalid at most once.
                     if v_c.contains(c_pair) {
-                        v_c.remove(c_pair); // V_c = V_c \ {(Cu, Cv)}
+                        v_c.remove(c_pair);
 
-                        // 级联使依赖这个失效簇对的 (u, v) 失效
+                        // Cascade to all Delta anchors associated with the HC.
                         if let Some(dependent_node_pairs) = d_cluster.get(c_pair) {
                             for node_pair in dependent_node_pairs {
                                 if pi.contains(node_pair) {
@@ -594,17 +776,17 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("结束了主调用");
+        info!("Completed Hyper Simulation worklist");
 
         // ==========================================
         // Phase 3: Construct Output
         // ==========================================
-        // 将基于 ID 的关系还原为引用的 HashMap
-        let mut result: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = 
+        // Convert the final id relation back to borrowed graph nodes.
+        let mut result: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> =
             self.nodes().map(|u| (u, HashSet::new())).collect();
 
         for (u_id, v_id) in pi {
-            // 由于我们事先在字典中存过映射，这里可以安全取值
+            // Every surviving id was inserted while scanning the two graphs.
             let u_node = id_to_u[&u_id];
             let v_node = id_to_v[&v_id];
             if let Some(set) = result.get_mut(u_node) {
@@ -615,24 +797,32 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         result
     }
 
-    fn get_hyper_simulation_effect_pass_by(&'a self, _other: &'a Self, delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>, d_match: & impl DMatch<'a, Edge = Self::Edge>, type_same_lookup: &HashMap<&'a Self::Node, HashSet<&'a Self::Node>>) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
+    fn get_hyper_simulation_effect_pass_by(
+        &'a self,
+        _other: &'a Self,
+        delta: &'a impl Delta<'a, Node = Self::Node, Edge = Self::Edge>,
+        d_match: &impl DMatch<'a, Edge = Self::Edge>,
+        type_same_lookup: &HashMap<&'a Self::Node, HashSet<&'a Self::Node>>,
+    ) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>> {
         init_global_logger_once("logs/hyper-simulation.log");
 
-        // 建立 ID 到节点的映射，方便最后构造返回结果
+        // This variant receives the h_v-compatible pairs precomputed by the
+        // caller, but uses the same id-based dependency worklist.
         let mut id_to_u: HashMap<usize, &'a Self::Node> = HashMap::new();
         let mut id_to_v: HashMap<usize, &'a Self::Node> = HashMap::new();
 
-        // 存储节点对与其对应的所有的 Semantic Clusters (HC) 及 D-match 结果
-        let mut hc_map: HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>> = HashMap::new();
-        
-        // Pi: 当前满足 Hyper Simulation 条件的 (u.id(), v.id()) 集合
+        // Delta anchors and their frozen HC/D-match dependencies.
+        let mut hc_map: HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>> =
+            HashMap::new();
+
+        // Pi is initialized directly from the supplied h_v lookup.
         let mut pi: HashSet<(usize, usize)> = HashSet::new();
 
         // ==========================================
         // Phase 1: Declarative Initialization
         // ==========================================
-        
-        // 1. 初始化 Pi 并获取 HC 和 D-match
+
+        // Freeze HC and D-match before starting the monotone deletion phase.
         for u in self.nodes() {
             id_to_u.insert(u.id(), u);
 
@@ -649,10 +839,10 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
                         let cv_id = cluster_v.id;
                         let d_match_set = d_match.d_match(cluster_u, cluster_v);
 
-                        // 条件 2.a: (u, v) 必须在 D-match 中
+                        // Anchor-membership invariant: the anchor must occur in D-match.
                         if !d_match_set.contains(&(u.id(), v.id())) {
                             valid = false;
-                            break; // 只要有一个 cluster 失败，(u,v) 就不可能在 Pi 中
+                            break; // All registered HCs are conjunctive dependencies.
                         }
                         local_clusters.push(((cu_id, cv_id), d_match_set.clone()));
                     }
@@ -665,13 +855,17 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("完成了 Pi 的初始化和 HC、D-match 的获取，Pi 大小: {}", pi.len());
+        info!(
+            "Initialized Pi from the supplied h_v lookup; Pi size: {}",
+            pi.len()
+        );
 
-        // A_cluster 对应的 D-match 缓存，避免重复计算
-        let mut a_cluster_d_match: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
-        
-        // 依赖索引构建:
-        // D_cluster[(Cu, Cv)] -> { (u, v) \in Pi } 
+        // Cache one D-match per logical HC pair.
+        let mut a_cluster_d_match: HashMap<(usize, usize), HashSet<(usize, usize)>> =
+            HashMap::new();
+
+        // Build HC-to-anchor and pair-to-HC reverse dependency indices.
+        // D_cluster[(Cu, Cv)] -> { (u, v) \in Pi }
         let mut d_cluster: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
         // D_pair[(u', v')] -> { (Cu, Cv) \in A_cluster }
         let mut d_pair: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
@@ -679,11 +873,11 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         for (&(u_id, v_id), clusters) in &hc_map {
             for ((cu_id, cv_id), d_match_set) in clusters {
                 let c_pair = (*cu_id, *cv_id);
-                
-                // 填充 D_cluster
+
+                // Record the Delta anchor for this HC.
                 d_cluster.entry(c_pair).or_default().insert((u_id, v_id));
 
-                // 如果这是第一次遇到这个簇对，填充 D_pair
+                // Record D-match dependencies only once per logical HC.
                 if !a_cluster_d_match.contains_key(&c_pair) {
                     a_cluster_d_match.insert(c_pair, d_match_set.clone());
 
@@ -694,20 +888,20 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("1. 初始化 Pi 并获取 HC 和 D-match");
+        info!("Built HC and D-match dependency indices");
 
-        // 2. 初始化 V_C (Valid Clusters)
+        // V_C contains HCs whose complete D-match is present in Pi.
         let mut v_c: HashSet<(usize, usize)> = HashSet::new();
         for (c_pair, d_match_set) in &a_cluster_d_match {
-            // 条件 2.b: D-match 的所有元素都必须在当前的 Pi 中
+            // D-match closure invariant: every required pair must survive in Pi.
             if d_match_set.is_subset(&pi) {
                 v_c.insert(*c_pair);
             }
         }
 
-        info!("2. 初始化 V_C (Valid Clusters)");
+        info!("Initialized valid HC set V_C");
 
-        // 3. 找出失效的 (u, v) 加入队列 Q
+        // Seed the deletion worklist with invalid anchors.
         let mut q: VecDeque<(usize, usize)> = VecDeque::new();
         let mut pi_retained = pi.clone();
 
@@ -723,26 +917,26 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
 
             if !all_in_vc {
-                q.push_back((u_id, v_id));      // 加入 Worklist
+                q.push_back((u_id, v_id));
                 pi_retained.remove(&(u_id, v_id)); // Pi = Pi \ Q
             }
         }
         pi = pi_retained;
 
-        info!("3. 找出失效的 (u, v) 加入队列 Q");
+        info!("Seeded invalid anchor worklist");
 
         // ==========================================
         // Phase 2: Cascade deletions via the queue
         // ==========================================
         while let Some((up_id, vp_id)) = q.pop_front() {
-            // 获取所有依赖于已删除节点对 (u', v') 的簇对 (Cu, Cv)
+            // A removed pair invalidates every HC whose D-match requires it.
             if let Some(dependent_clusters) = d_pair.get(&(up_id, vp_id)) {
                 for c_pair in dependent_clusters {
-                    // 如果簇对仍然被认为是有效的，现在它失效了
+                    // Each HC transitions from valid to invalid at most once.
                     if v_c.contains(c_pair) {
                         v_c.remove(c_pair); // V_c = V_c \ {(Cu, Cv)}
 
-                        // 级联使依赖这个失效簇对的 (u, v) 失效
+                        // Cascade to all anchors associated with this HC.
                         if let Some(dependent_node_pairs) = d_cluster.get(c_pair) {
                             for node_pair in dependent_node_pairs {
                                 if pi.contains(node_pair) {
@@ -756,17 +950,17 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("结束了主调用");
+        info!("Completed Hyper Simulation worklist");
 
         // ==========================================
         // Phase 3: Construct Output
         // ==========================================
-        // 将基于 ID 的关系还原为引用的 HashMap
-        let mut result: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> = 
+        // Convert the final id relation back to graph nodes.
+        let mut result: HashMap<&'a Self::Node, HashSet<&'a Self::Node>> =
             self.nodes().map(|u| (u, HashSet::new())).collect();
 
         for (u_id, v_id) in pi {
-            // 由于我们事先在字典中存过映射，这里可以安全取值
+            // Every surviving id came from the precomputed lookup.
             let u_node = id_to_u[&u_id];
             let v_node = id_to_v[&v_id];
             if let Some(set) = result.get_mut(u_node) {
@@ -777,38 +971,22 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
         result
     }
 
-    fn get_hyper_simulation_effect_by_id(&'a self, hc_map: &HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>>) -> HashSet<(usize, usize)> {
+    fn get_hyper_simulation_effect_by_id(
+        &'a self,
+        hc_map: &HashMap<(usize, usize), Vec<((usize, usize), HashSet<(usize, usize)>)>>,
+    ) -> HashSet<(usize, usize)> {
         // ==========================================
-        // hc_map 参数说明：
+        // Precomputed id-only input
         // ==========================================
-        // hc_map 是一个预计算的语义集群和 D-match 关系映射表，用于完全在 ID 空间内执行 Hyper Simulation 计算。
-        // 
-        // 结构：HashMap<(u_id, v_id), Vec<((cu_id, cv_id), D_match_set)>>
-        // 
-        // 键 (u_id, v_id)：
-        //   - 候选节点对，其中 u_id 属于 self，v_id 属于 other
-        //   - 代表可能参加 Hyper Simulation 的节点对
-        // 
-        // 值 Vec<((cu_id, cv_id), D_match_set)>：
-        //   - 该节点对相关的所有语义集群及其 D-match 关系
-        //   - (cu_id, cv_id)：语义集群对的 ID（u 侧和 v 侧）
-        //   - D_match_set：HashSet<(usize, usize)>，该集群对的 D-match 结果
-        //     即满足 d_match(cluster_u, cluster_v) 的所有节点对 (u'_id, v'_id)
-        // 
-        // 调用前的准备步骤（由调用者负责）：
-        //   1. 计算 type_same 的两个图之间所有可兼容的节点对
-        //   2. 对每个节点对，调用 delta.get_sematic_clusters() 获取语义集群
-        //   3. 对每个集群对，调用 d_match.d_match() 计算 D-match 集合
-        //   4. 构建此 hc_map 并传入
-        //
-        // 函数内执行：
-        //   - 完全基于 ID-based 的数据结构，不涉及具体的节点类型
-        //   - 执行三个阶段：初始化、V_C 构建、级联删除
-        //   - 返回最终的 Hyper Simulation 结果集合
-        
+        // hc_map[(u,v)] lists every logical HC pair associated with the
+        // candidate anchor and the HC's D-match relation.  The caller has
+        // already applied h_v, constructed Delta, and frozen D-match.  This
+        // function therefore performs only the deterministic fixed point in
+        // three phases: initialize Pi, initialize V_C, and cascade deletions.
+
         init_global_logger_once("logs/hyper-simulation.log");
 
-        // Pi: 当前满足 Hyper Simulation 条件的 (u.id(), v.id()) 集合
+        // Pi is the current candidate relation.
         let mut pi: HashSet<(usize, usize)> = HashSet::new();
 
         // ==========================================
@@ -818,25 +996,25 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             pi.insert((u_id, v_id));
         }
 
-        info!("完成了 Pi 的初始化和 HC、D-match 的获取，Pi 大小: {}", pi.len());
+        info!("Initialized id-only Pi; Pi size: {}", pi.len());
 
-        // A_cluster 对应的 D-match 缓存，避免重复计算
-        let mut a_cluster_d_match: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
-        
-        // 依赖索引构建:
-        // D_cluster[(Cu, Cv)] -> { (u, v) \in Pi } 
+        // Cache one D-match per logical HC pair.
+        let mut a_cluster_d_match: HashMap<(usize, usize), HashSet<(usize, usize)>> =
+            HashMap::new();
+
+        // D_cluster maps an HC to its Delta anchors.
         let mut d_cluster: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
-        // D_pair[(u', v')] -> { (Cu, Cv) \in A_cluster }
+        // D_pair maps a required D-match pair to dependent HCs.
         let mut d_pair: HashMap<(usize, usize), HashSet<(usize, usize)>> = HashMap::new();
 
         for (&(u_id, v_id), clusters) in hc_map.iter() {
             for ((cu_id, cv_id), d_match_set) in clusters {
                 let c_pair = (*cu_id, *cv_id);
-                
-                // 填充 D_cluster
+
+                // Record the anchor for this logical HC.
                 d_cluster.entry(c_pair).or_default().insert((u_id, v_id));
 
-                // 如果这是第一次遇到这个簇对，填充 D_pair
+                // Freeze reverse D-match dependencies once per HC.
                 if !a_cluster_d_match.contains_key(&c_pair) {
                     a_cluster_d_match.insert(c_pair, d_match_set.clone());
 
@@ -847,20 +1025,20 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("1. 初始化 Pi 并获取 HC 和 D-match");
+        info!("Built id-only HC dependency indices");
 
-        // 2. 初始化 V_C (Valid Clusters)
+        // Initialize HCs whose complete D-match is present in Pi.
         let mut v_c: HashSet<(usize, usize)> = HashSet::new();
         for (c_pair, d_match_set) in &a_cluster_d_match {
-            // 条件 2.b: D-match 的所有元素都必须在当前的 Pi 中
+            // D(Cq,Cd) must be a subset of Pi.
             if d_match_set.is_subset(&pi) {
                 v_c.insert(*c_pair);
             }
         }
 
-        info!("2. 初始化 V_C (Valid Clusters)");
+        info!("Initialized valid HC set V_C");
 
-        // 3. 找出失效的 (u, v) 加入队列 Q
+        // Seed anchors whose HCs are already invalid.
         let mut q: VecDeque<(usize, usize)> = VecDeque::new();
         let mut pi_retained = pi.clone();
 
@@ -876,26 +1054,26 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
 
             if !all_in_vc {
-                q.push_back((u_id, v_id));      // 加入 Worklist
+                q.push_back((u_id, v_id));
                 pi_retained.remove(&(u_id, v_id)); // Pi = Pi \ Q
             }
         }
         pi = pi_retained;
 
-        info!("3. 找出失效的 (u, v) 加入队列 Q");
+        info!("Seeded id-only deletion worklist");
 
         // ==========================================
         // Phase 2: Cascade deletions via the queue
         // ==========================================
         while let Some((up_id, vp_id)) = q.pop_front() {
-            // 获取所有依赖于已删除节点对 (u', v') 的簇对 (Cu, Cv)
+            // Invalidate HCs depending on the removed pair.
             if let Some(dependent_clusters) = d_pair.get(&(up_id, vp_id)) {
                 for c_pair in dependent_clusters {
-                    // 如果簇对仍然被认为是有效的，现在它失效了
+                    // Each HC becomes invalid at most once.
                     if v_c.contains(c_pair) {
                         v_c.remove(c_pair); // V_c = V_c \ {(Cu, Cv)}
 
-                        // 级联使依赖这个失效簇对的 (u, v) 失效
+                        // Cascade to each anchor that requires the HC.
                         if let Some(dependent_node_pairs) = d_cluster.get(c_pair) {
                             for node_pair in dependent_node_pairs {
                                 if pi.contains(node_pair) {
@@ -909,7 +1087,7 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
             }
         }
 
-        info!("结束了主调用");
+        info!("Completed id-only Hyper Simulation worklist");
 
         // ==========================================
         // Phase 3: Return ID-based Result
@@ -919,15 +1097,14 @@ where H: Hypergraph<'a> + Typed<'a> + LPredicate<'a> + ContainedHyperedge<'a> {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
+/// Serializable event journal emitted by the trace-oriented reference solver.
 pub struct HyperSimulationTrace {
-    events: Vec<HSEvent>
+    events: Vec<HSEvent>,
 }
 
 impl HyperSimulationTrace {
     fn new() -> Self {
-        HyperSimulationTrace {
-            events: Vec::new()
-        }
+        HyperSimulationTrace { events: Vec::new() }
     }
 
     fn add_base_event(&mut self, sc_id: usize, d_match: HashSet<(usize, usize)>) {
@@ -943,7 +1120,7 @@ impl HyperSimulationTrace {
 impl IntoIterator for HyperSimulationTrace {
     type Item = HSEvent;
     type IntoIter = std::vec::IntoIter<HSEvent>;
-    
+
     fn into_iter(self) -> Self::IntoIter {
         self.events.into_iter()
     }
@@ -952,7 +1129,7 @@ impl IntoIterator for HyperSimulationTrace {
 impl<'a> IntoIterator for &'a HyperSimulationTrace {
     type Item = &'a HSEvent;
     type IntoIter = std::slice::Iter<'a, HSEvent>;
-    
+
     fn into_iter(self) -> Self::IntoIter {
         self.events.iter()
     }
@@ -966,7 +1143,7 @@ impl TraceLog for HyperSimulationTrace {
         bincode::serialize_into(&mut writer, &self)?;
         Ok(())
     }
-    
+
     fn get_trace(filename: &'static str) -> Result<Self, Box<dyn Error>> {
         let file = File::open(filename)?;
         let mut reader = BufReader::new(file);
@@ -976,7 +1153,8 @@ impl TraceLog for HyperSimulationTrace {
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
+/// An anchor-membership failure or a derived D-match closure failure.
 pub enum HSEvent {
-    Base(usize, HashSet<(usize, usize)>), // current D-Match
-    Derivation(usize, HashSet<(usize, usize)>) // D-Match \ Sim
+    Base(usize, HashSet<(usize, usize)>),       // current D-Match
+    Derivation(usize, HashSet<(usize, usize)>), // D-Match \ Sim
 }

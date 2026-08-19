@@ -1,3 +1,8 @@
+//! PyO3 extension exposing graph and Hyper Simulation algorithms to Python.
+//!
+//! Python-facing types intentionally use stable integer identifiers so one
+//! logical HC can be registered once and associated with multiple Delta pairs.
+
 pub mod graph;
 pub mod utils;
 

@@ -1,3 +1,7 @@
+//! Generic graph- and hypergraph-simulation algorithms used by HyperMatch.
+//!
+//! The crate contains no model code: callers supply graph structure, labels,
+//! `h_v`, HC dependencies, and D-match relations through the public traits.
 
 pub mod algorithm;
 pub mod utils;

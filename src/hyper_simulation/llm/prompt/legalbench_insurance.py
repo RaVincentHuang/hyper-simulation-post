@@ -1,3 +1,5 @@
+"""Prompt text for LegalBench insurance-policy interpretation."""
+
 LEGALBENCH_INSURANCE_BASE = """### Insurance Policy:
 {context_text}
 {question}

@@ -1,3 +1,5 @@
+"""Track coreference mentions across retokenization and annotate graph nodes."""
+
 from spacy.tokens import Doc, Span, Token
 from typing import List, Tuple
 from dataclasses import dataclass
@@ -5,6 +7,8 @@ from hyper_simulation.hypergraph.linguistic import QueryType, Pos, Tag, Dep, Ent
 from hyper_simulation.hypergraph.dependency import Node
 from hyper_simulation.hypergraph.hypergraph import Hypergraph, Vertex, Hyperedge
 class CorrefCluster:
+    """Mutable mention cluster whose token spans survive document retokenization."""
+
     def __init__(self, cluster_id: int, mentions: list[Span]):
         self.cluster_id: int = cluster_id
         self.mentions: list[Span] = mentions
@@ -14,10 +18,16 @@ class CorrefCluster:
         self.dropped: bool = False
         self.covered_nodes_if_dropped: list[list[Node]] = []
     def drop(self):
+        """Mark this ambiguous cluster as unavailable for node linking."""
+
         self.dropped = True
     def is_dropped(self) -> bool:
+        """Return whether the cluster was excluded during overlap repair."""
+
         return self.dropped
     def get_current_index(self) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+        """Return current token ranges for all mentions and primary mentions."""
+
         mention_indices = [(mention.start, mention.end) for mention in self.mentions]
         primary_indices = [(mention.start, mention.end) for mention in self.is_primary_mention]
         return mention_indices, primary_indices
@@ -32,6 +42,8 @@ class CorrefCluster:
         ]
     @staticmethod
     def from_doc(doc: Doc) -> List['CorrefCluster']:
+        """Convert fastcoref character ranges into spaCy token-span clusters."""
+
         clusters: list['CorrefCluster'] = []
         resolved_text = doc._.resolved_text
         coref_clusters = doc._.coref_clusters
@@ -65,6 +77,8 @@ class CorrefCluster:
         return clusters
     @staticmethod
     def update_by_doc(old_clusters: List['CorrefCluster'], doc: Doc) -> List['CorrefCluster']:
+        """Remap saved character ranges after the document was retokenized."""
+
         clusters: list['CorrefCluster'] = []
         for cluster in old_clusters:
             cluster._calc_changed_ranges()
@@ -108,6 +122,10 @@ class CorrefCluster:
         return clusters
     @staticmethod
     def fixup_clusters(clusters: List['CorrefCluster'], spans_to_merge: List[Span]) -> Tuple[List['CorrefCluster'], List[Span]]:
+        """Repair overlapping mentions and return additional safe merge spans."""
+
+        # Retokenization cannot accept overlapping spans.  Resolve ownership by
+        # dependency root while retaining each surviving mention's primary flag.
         @dataclass
         class _KeptEntry:
             cluster_idx: int
@@ -313,6 +331,8 @@ class CorrefCluster:
                 kept_a_minus_b_spans.append(span)
         return clusters, kept_a_minus_b_spans
 def mark_corref(nodes: List[Node], corref_clusters: List[CorrefCluster]) -> List[Node]:
+    """Attach cluster ids, primary mentions, and resolved text to graph nodes."""
+
     node_map: dict[int, Node] = {node.index: node for node in nodes}
     def _coref_primary_rank(node: Node) -> tuple[int, int, int, int]:
         ent_score = 1 if node.ent != Entity.NOT_ENTITY else 0
@@ -340,6 +360,8 @@ def mark_corref(nodes: List[Node], corref_clusters: List[CorrefCluster]) -> List
         if node.lemma and node.lemma.lower() not in {"to", node.text.lower()}:
             return node.lemma
         return node.text
+    # Dropped clusters retain their covered nodes for diagnostics but must not
+    # create referential links in the dependency graph.
     for cluster in corref_clusters:
         if cluster.is_dropped():
             covered_nodes: list[list[Node]] = []

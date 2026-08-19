@@ -1,6 +1,10 @@
+"""Coarse entity ontology used by matching and hypergraph fusion."""
+
 from enum import Enum, auto
 from hyper_simulation.hypergraph.linguistic import Entity
 class ENT(Enum):
+    """Project-level entity types, including abstract and domain categories."""
+
     PERSON = auto()
     COUNTRY = auto()
     LOC = auto()
@@ -35,6 +39,8 @@ class ENT(Enum):
     NOT_ENT = auto()
     @staticmethod
     def from_entity(ent: Entity) -> "ENT":
+        """Collapse a spaCy-style entity label into the project ontology."""
+
         mapping = {
             Entity.PERSON: ENT.PERSON,
             Entity.NORP: ENT.NORP,
@@ -58,6 +64,8 @@ class ENT(Enum):
         }
         return mapping.get(ent, ENT.NOT_ENT)
     def level(self) -> int:
+        """Return the hand-authored specificity level used by type comparison."""
+
         hierarchy = {
             ENT.NOT_ENT: 0,
             ENT.CONCEPT: 1,
@@ -95,6 +103,8 @@ class ENT(Enum):
         return hierarchy.get(self, 0)
     @staticmethod
     def from_str(label: str) -> "ENT":
+        """Parse an ontology label, falling back to ``NOT_ENT``."""
+
         try:
             return ENT[label]
         except KeyError:

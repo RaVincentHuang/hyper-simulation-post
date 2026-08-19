@@ -1,3 +1,5 @@
+"""Wikidata-backed entity typing with cached LLM label classification."""
+
 import json
 from pathlib import Path
 import concurrent.futures
@@ -9,6 +11,8 @@ from hyper_simulation.component.nli import get_nli_entailment_score_batch
 from hyper_simulation.hypergraph.entity import ENT
 from hyper_simulation.llm.chat_completion import get_generate
 class WikidataTagger:
+    """Resolve mentions to Wikidata and map their types onto ``ENT`` labels."""
+
     def __init__(
         self,
         max_workers: int = 10,
@@ -56,11 +60,15 @@ class WikidataTagger:
             "NOT_ENT",
         ]
     def batch_process(self, pairs: list[tuple[str, str]]) -> list[dict[str, str]]:
+        """Tag mention-context pairs while preserving their input order."""
+
         if not pairs:
             return []
         results: list[dict[str, str]] = [{} for _ in pairs]
         unique_terms = sorted({text.strip() for text, _ in pairs if text and text.strip()})
         term_to_candidates: dict[str, list[dict[str, str]]] = {}
+        # Network lookups are parallel, but all results are reassembled by the
+        # original pair index before they cross the public API boundary.
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_map = {executor.submit(self._search_candidates, term): term for term in unique_terms}
             for future in concurrent.futures.as_completed(future_map):
@@ -299,6 +307,8 @@ class WikidataTagger:
                 return label
         return "NOT_ENT"
     def get_entity_for_text(self, text: str, context: str) -> ENT:
+        """Return the coarse entity type for one mention in context."""
+
         rows = self.batch_process([(text, context)])
         if not rows:
             return ENT.NOT_ENT

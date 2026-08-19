@@ -1,3 +1,5 @@
+"""Fuse evidence hypergraphs and trace simulation support to source contexts."""
+
 from hmac import new
 from typing import List, Dict, Set, Tuple, Any, Optional
 import itertools
@@ -10,23 +12,33 @@ from hyper_simulation.utils.log import getLogger
 from hyper_simulation.component.postprocess import post_detection, get_simulation_slice
 logger = getLogger(__name__)
 class UnionFind:
+    """Identity-based disjoint-set structure for mutable vertex objects."""
+
     def __init__(self, elements):
         self.parent = {id(e): id(e) for e in elements}
         self.id_to_vertex = {id(e): e for e in elements}
     def find(self, item):
+        """Return the representative object id with path compression."""
+
         item_id = id(item)
         if self.parent[item_id] == item_id:
             return item_id
         self.parent[item_id] = self.find(self.id_to_vertex[self.parent[item_id]])
         return self.parent[item_id]
     def union(self, item1, item2):
+        """Merge the sets containing two registered objects."""
+
         root1_id = self.find(item1)
         root2_id = self.find(item2)
         if root1_id != root2_id:
             self.parent[root1_id] = root2_id
     def get_vertex(self, item_id):
+        """Look up the original object registered under an identity id."""
+
         return self.id_to_vertex.get(item_id)
 class MultiHopFusion:
+    """Merge evidence graphs, run simulation, and render source-level support."""
+
     def __init__(self):
         self.fusion_logger = getLogger("merge_hypergraph")
         self.consistent_logger = getLogger("consistency")
@@ -225,6 +237,8 @@ class MultiHopFusion:
             return True
         return False
     def merge_hypergraphs(self, evidence_hypergraphs: List[Hypergraph]) -> Tuple[Hypergraph, Dict[int, Set[int]]]:
+        """Fuse compatible cross-source vertices while preserving provenance."""
+
         self.fusion_logger.info("[Merge] Start merging evidence hypergraphs")
         self.fusion_logger.info(f"[Merge] Total evidence hypergraphs: {len(evidence_hypergraphs)}")
         all_vertex_ids = [] 
@@ -261,6 +275,8 @@ class MultiHopFusion:
         exact_merge_count = 0
         skipped_type_mismatch = 0
         skipped_short_text = 0
+        # Never merge within one source.  Cross-source exact matches are safe;
+        # remaining candidates must pass both type compatibility and NLI.
         for i in range(len(valid_vertex_ids)):
             for j in range(i + 1, len(valid_vertex_ids)):
                 v1_id = valid_vertex_ids[i]
@@ -359,6 +375,8 @@ class MultiHopFusion:
             self.fusion_logger.warning("[Merge] No multi-source vertices found. Fusion might be too strict or data is disjoint.")
         return merged_hg, new_vertex_provenance
     def process(self, query_hg: Hypergraph, evidence_hgs: List[Hypergraph], evidence_texts: List[str]) -> Tuple[bool, str]:
+        """Fuse evidence, run Hyper Simulation, and build a provenance report."""
+
         self.consistent_logger.info("[Multi-hop] Enter multi-hop consistency detection")
         self.consistent_logger.info(f"[Multi-hop] Query: '{query_hg.doc[:50] if query_hg.doc else 'N/A'}...'")
         self.consistent_logger.info(f"[Multi-hop] Evidence count: {len(evidence_hgs)}")

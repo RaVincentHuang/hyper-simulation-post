@@ -1,3 +1,9 @@
+//! NetworkX-to-Rust adapters for classical and bounded graph simulation.
+//!
+//! Attribute comparison callbacks remain Python-owned while the fixed-point
+//! traversal executes in Rust.  Conversion functions preserve NetworkX node
+//! identities when translating results back to dictionaries and sets.
+
 use graph_base::interfaces::vertex::Vertex;
 use graph_simulation::algorithm::simulation::Simulation;
 use graph_simulation::algorithm::bounded::{BoundedSimulation, Bounded};
@@ -15,7 +21,7 @@ use std::hash::{Hash, Hasher};
 // type SharedRustFn = Arc<dyn Fn(&Attributes, &Attributes) -> bool + Send + Sync>;
 
 
-// 自定义图结构
+// Rust-owned graph representation of NetworkX nodes, edges, and attributes.
 
 #[derive(Debug)]
 struct Attributes(HashMap<String, Py<PyAny>>);
@@ -46,7 +52,7 @@ impl std::fmt::Display for Attributes {
 
 impl PartialEq for Attributes {
     fn eq(&self, other: &Self) -> bool {
-        // 首先比较长度
+        // Different key counts cannot represent equal attribute dictionaries.
         if self.0.len() != other.0.len() {
             return false;
         }
@@ -71,14 +77,14 @@ impl Eq for Attributes {}
 
 impl Hash for Attributes {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // 确保相同的字典产生相同的哈希值
+        // Sort keys so equivalent Python dictionaries have identical hashes.
         let mut entries: Vec<_> = self.0.iter().collect();
         entries.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
         Python::attach(|py| {
             for (key, value) in entries {
                 key.hash(state);
-                // 使用 Python 对象的 __hash__ 方法
+                // Reuse each Python object's own hash when it is available.
                 match value.call_method0(py, "__hash__") {
                     Ok(hash_result) => {
                         if let Ok(hash_value) = hash_result.extract::<isize>(py) {
@@ -86,7 +92,7 @@ impl Hash for Attributes {
                         }
                     },
                     Err(_) => {
-                        // 如果对象不可哈希，使用默认值
+                        // Use a deterministic sentinel for unhashable values.
                         0isize.hash(state);
                     }
                 }
@@ -101,6 +107,7 @@ impl Label for Attributes {
     }
 }
 
+/// Rust-owned node whose attributes retain their Python values.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Node {
     id: usize,
@@ -119,6 +126,7 @@ impl SingleId for Node {
     }
 }
 
+/// Directed edge with Python-originated attribute values.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Edge {
     source: usize,
@@ -132,6 +140,7 @@ impl IdPair for Edge {
     }
 }
 
+/// PyO3 wrapper that caches indices and caller-provided label predicates.
 #[pyclass]
 pub struct NetworkXGraph {
     nodes: Vec<Node>,
@@ -141,7 +150,7 @@ pub struct NetworkXGraph {
     same_edge_fn: Option<Py<PyAny>>,
     same_node_edge_fn: Option<Py<PyAny>>,
     same_label_cache: Option<HashSet<(usize, usize)>>,
-    bound_values: HashMap<usize, usize>,  // 节点 ID 到 bound 值的映射
+    bound_values: HashMap<usize, usize>,  // Node id to its bounded-simulation radius.
 }
 
 impl Clone for NetworkXGraph {
@@ -188,7 +197,7 @@ impl NetworkXGraph {
         }
     }
 
-    // 从NetworkX图转换的静态方法
+    // Convert a NetworkX graph while retaining node and edge attributes.
     #[staticmethod]
     fn from_networkx(nx_graph: &Bound<'_, PyAny>) -> PyResult<Self> {
         let nodes = nx_graph.getattr("nodes")?.call_method1("items", ())?;
@@ -216,12 +225,12 @@ impl NetworkXGraph {
         Ok(graph)
     }
 
-    // 转回NetworkX图的方法
+    // Reconstruct a NetworkX graph from the Rust-owned representation.
     fn to_networkx(&self, py: Python) -> PyResult<PyObject> {
         let nx = py.import("networkx")?;
         let graph = nx.getattr("Graph")?.call0()?;
 
-        // 添加节点
+        // Restore nodes before edges so all edge endpoints exist.
         for node in &self.nodes {
             let attrs_dict = PyDict::new(py);
             for (k, v) in &node.attributes.0 {
@@ -233,7 +242,7 @@ impl NetworkXGraph {
             )?;
         }
 
-        // 添加边
+        // Clone Python attribute values back into the destination graph.
         for edge in &self.edges {
             let attrs_dict = PyDict::new(py);
             for (k, v) in &edge.attributes.0 {
@@ -252,7 +261,7 @@ impl NetworkXGraph {
         Ok(graph.into())
     }
 
-    // 其他有用的方法
+    // Mutation and inspection helpers exposed through PyO3.
     fn add_node(&mut self, id: String, attributes: HashMap<String, PyObject>) {
         let index = self.nodes.len();
         self.node_indices.insert(id.clone(), index);
@@ -284,7 +293,7 @@ impl NetworkXGraph {
         self.edges.len()
     }
 
-    // 获取节点属性
+    // Return a Python-owned copy of one node's attributes.
     fn get_node_attributes(&self, node_id: &str) -> Option<HashMap<String, PyObject>> {
         self.node_indices.get(node_id).map(|&index| {
             Python::with_gil(|py| {
@@ -295,7 +304,7 @@ impl NetworkXGraph {
         })
     }
 
-    // 获取边属性
+    // Return a Python-owned copy of one edge's attributes.
     fn get_edge_attributes(
         &self,
         source: &str,
@@ -340,7 +349,7 @@ impl NetworkXGraph {
     }
 
     fn set_bound_values(&mut self, bound_fn: Py<PyAny>) {
-        // 使用 bound 函数为每个节点设置 bound 值
+        // Evaluate the caller's radius function once per node and cache it.
         for node in &self.nodes {
             let bound_value = Python::attach(|py| {
                 let node_attrs = node.attributes.0.iter()
@@ -509,6 +518,7 @@ fn to_nx_node(_py: Python, node: &Node) -> PyResult<Py<PyAny>> {
     })
 }
 
+/// Return the greatest simulation relation between two NetworkX graphs.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, is_label_cached = false))]
 pub fn get_simulation_inter(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, PyAny>, is_label_cached: bool) -> PyResult<Py<PyAny>> {
@@ -535,6 +545,7 @@ pub fn get_simulation_inter(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, 
     })
 }
 
+/// Test mutual simulation using default node-label equality.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, is_label_cached = false))]
 pub fn is_simulation_isomorphic(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, PyAny>, is_label_cached: bool) -> PyResult<bool> {
@@ -548,6 +559,7 @@ pub fn is_simulation_isomorphic(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<
     Ok(NetworkXGraph::has_simulation(graph1.get_simulation_inter(&graph2)))
 }
 
+/// Compute inter-graph simulation with a Python node comparator.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, compare, is_label_cached = false))]
 pub fn get_simulation_inter_fn(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, PyAny>, compare: Py<PyAny>, is_label_cached: bool) -> PyResult<Py<PyAny>> {
@@ -574,6 +586,7 @@ pub fn get_simulation_inter_fn(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'
     })
 }
 
+/// Test mutual simulation with a Python node comparator.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, compare, is_label_cached = false))]
 pub fn is_simulation_isomorphic_fn(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, PyAny>, compare: Py<PyAny>, is_label_cached: bool) -> PyResult<bool> {
@@ -589,6 +602,7 @@ pub fn is_simulation_isomorphic_fn(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bou
     Ok(NetworkXGraph::has_simulation(graph1.get_simulation_inter(&graph2)))
 }
 
+/// Test simulation isomorphism with independent node and edge comparators.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, node_compare, edge_compare, is_label_cached = false))]
 pub fn is_simulation_isomorphic_of_node_edge_fn(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, PyAny>, node_compare: Py<PyAny>, edge_compare: Py<PyAny>, is_label_cached: bool) -> PyResult<bool> {
@@ -605,6 +619,7 @@ pub fn is_simulation_isomorphic_of_node_edge_fn(nx_graph1: &Bound<'_, PyAny>, nx
     Ok(NetworkXGraph::has_simulation(graph1.get_simulation_of_node_edge(&graph2)))
 }
 
+/// Test simulation isomorphism with a joint node-edge comparator.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, node_edge_compare, is_label_cached = false))]
 pub fn is_simulation_isomorphic_of_edge_fn(nx_graph1: &Bound<'_, PyAny>, nx_graph2: &Bound<'_, PyAny>, node_edge_compare: Py<PyAny>, is_label_cached: bool) -> PyResult<bool> {
@@ -637,7 +652,7 @@ impl<'a> Degree<'a> for NetworkXGraph {
             degree_map.insert(node, out_degree);
         }
         
-        // 使用 unsafe 代码来创建 DegreeList，因为其字段是私有的
+        // DegreeList has private fields upstream; transmute the equivalent map.
         unsafe { std::mem::transmute::<HashMap<&'a Self::Node, usize>, DegreeList<'a, Self>>(degree_map) }
     }
 
@@ -651,12 +666,12 @@ impl<'a> Degree<'a> for NetworkXGraph {
             degree_map.insert(node, in_degree);
         }
         
-        // 使用 unsafe 代码来创建 DegreeList，因为其字段是私有的
+        // DegreeList has private fields upstream; transmute the equivalent map.
         unsafe { std::mem::transmute::<HashMap<&'a Self::Node, usize>, DegreeList<'a, Self>>(degree_map) }
     }
 
     fn out_degree(&'a self, degree_list: &DegreeList<'a, Self>, node: &Self::Node) -> usize {
-        // 使用 unsafe 代码访问私有字段
+        // Read the upstream private map through its known representation.
         unsafe { 
             let degree_map = &*(degree_list as *const _ as *const HashMap<&'a Self::Node, usize>);
             *degree_map.get(node).unwrap_or(&0)
@@ -664,7 +679,7 @@ impl<'a> Degree<'a> for NetworkXGraph {
     }
 
     fn in_degree(&'a self, degree_list: &DegreeList<'a, Self>, node: &Self::Node) -> usize {
-        // 使用 unsafe 代码访问私有字段
+        // Read the upstream private map through its known representation.
         unsafe { 
             let degree_map = &*(degree_list as *const _ as *const HashMap<&'a Self::Node, usize>);
             *degree_map.get(node).unwrap_or(&0)
@@ -674,12 +689,13 @@ impl<'a> Degree<'a> for NetworkXGraph {
 
 impl<'a> Bounded<'a> for NetworkXGraph {
     fn get_bound(&'a self, u: &'a Self::Node, v: &'a Self::Node) -> usize {
-        // 从 u 到 v 的 bound 值。我们定义为 u 节点的 bound_values 中的值
-        // 或者可以定义为基于 (u, v) 对的某个函数
+        // This adapter defines the pair bound from the source node's cached
+        // radius; callers can encode pair-specific behavior in their callback.
         *self.bound_values.get(&u.id).unwrap_or(&0)
     }
 }
 
+/// Compute bounded simulation using caller-provided label and radius functions.
 #[pyfunction]
 #[pyo3(signature = (nx_graph1, nx_graph2, compare, bound, is_label_cached = false))]
 pub fn get_bounded_simulation(
@@ -689,25 +705,25 @@ pub fn get_bounded_simulation(
     bound: Py<PyAny>,
     is_label_cached: bool
 ) -> PyResult<Py<PyAny>> {
-    // 1. 从 NetworkX 图转换
+    // 1. Convert both NetworkX inputs into Rust-owned graphs.
     let mut graph1 = NetworkXGraph::from_networkx(nx_graph1)?;
     let graph2 = NetworkXGraph::from_networkx(nx_graph2)?;
     
-    // 2. 注册 compare 函数
+    // 2. Register the caller-provided label comparator.
     graph1.register_compare_fn(compare);
     
-    // 3. 为 graph1 设置 bound 值
+    // 3. Materialize the bound for every query-side node.
     graph1.set_bound_values(bound);
     
-    // 4. 构建缓存
+    // 4. Optionally precompute cross-graph label compatibility.
     if is_label_cached {
         graph1.build_compare_cache(&graph2);
     }
     
-    // 5. 执行 bounded simulation
+    // 5. Run the bounded-simulation fixed point.
     let sim = graph1.get_bounded_simulation(&graph2);
     
-    // 6. 转换结果为 Python 对象
+    // 6. Convert borrowed Rust nodes back to Python sets.
     Python::attach(|py| {
         let map = PyDict::new(py);
         
@@ -720,7 +736,7 @@ pub fn get_bounded_simulation(
     })
 }
 
-// 模块定义
+// Historical standalone module definition retained as a reference.
 // #[pymodule]
 // pub fn networkx_graph(_py: Python, m: &PyModule) -> PyResult<()> {
 //     m.add_class::<NetworkXGraph>()?;

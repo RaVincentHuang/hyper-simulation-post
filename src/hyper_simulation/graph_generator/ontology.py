@@ -1,3 +1,5 @@
+"""Entity and relation labels supplied to graph-generation prompts."""
+
 general_entity = [
     "Person", "Location", "Organization", "Event", "Product", "Work", "Time", "Number", "Attribute",
 ]

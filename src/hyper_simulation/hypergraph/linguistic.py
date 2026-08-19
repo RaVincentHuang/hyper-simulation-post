@@ -1,5 +1,9 @@
+"""Stable enums for query, part-of-speech, dependency, and entity labels."""
+
 from enum import Enum, IntEnum
 class QueryType(Enum):
+    """Expected semantic category of an interrogative placeholder."""
+
     BELONGS = 1
     WHAT = 2
     WHICH = 3
@@ -10,6 +14,8 @@ class QueryType(Enum):
     LOCATION = 8
     REASON = 9
 class Pos(IntEnum):
+    """Compact universal part-of-speech identifiers."""
+
     ADP = 1
     ADV = 2
     ADJ = 3
@@ -29,6 +35,8 @@ class Pos(IntEnum):
     X = 17
     SPACE = 18
 class Tag(IntEnum):
+    """Compact Penn Treebank-style token tag identifiers."""
+
     CC = 1
     CD = 2
     DT = 3
@@ -72,6 +80,8 @@ class Tag(IntEnum):
     LS = 41
     WILDCARD = 99
 class Dep(IntEnum):
+    """Compact dependency-relation identifiers used in graph construction."""
+
     nsubj = 1
     nsubjpass = 2
     csubj = 3
@@ -119,6 +129,8 @@ class Dep(IntEnum):
     nmod = 45
     ROOT = 46
 class Entity(Enum):
+    """spaCy named-entity labels retained on dependency nodes."""
+
     PERSON = 1
     NORP = 2
     FAC = 3

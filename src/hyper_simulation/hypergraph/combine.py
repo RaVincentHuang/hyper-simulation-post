@@ -1,9 +1,13 @@
+"""Select non-overlapping linguistic spans for spaCy retokenization."""
+
 from spacy.tokens import Doc, Span, Token
 from nltk.collocations import BigramCollocationFinder
 from nltk.metrics import BigramAssocMeasures
 from spacy.util import filter_spans
 from hyper_simulation.hypergraph.corref import CorrefCluster
 def get_level_order(doc: Doc, reversed=False) -> list[Token]:
+    """Return tokens grouped by dependency-tree depth."""
+
     levels: dict[int, list[Token]] = {}
     max_level = 0
     for token in doc:
@@ -79,6 +83,8 @@ def _right_descendants(token: Token) -> list[Token]:
         descendants.extend(_right_descendants(right))
     return descendants
 def calc_correfs_str(doc: Doc) -> set[str]:
+    """Collect valid mention strings from the document's coreference clusters."""
+
     correfs: set[str] = set()
     clusters = getattr(doc._, "coref_clusters", None)
     if not clusters:
@@ -171,6 +177,8 @@ def _calc_bigram_likelihood_scores(doc: Doc) -> dict[tuple[str, str], float]:
     scored = finder.score_ngrams(BigramAssocMeasures.likelihood_ratio)
     return {pair: score for pair, score in scored}
 def combine_links(doc: Doc) -> list[Span]:
+    """Select hyphen-linked spans and expand overlapping named entities."""
+
     links_to_merge: list[Span] = []
     links_token_idxs: set[int] = set()
     for token in doc:
@@ -211,6 +219,10 @@ def combine_links(doc: Doc) -> list[Span]:
     doc.set_ents(filter_spans(new_ents), default="unmodified")
     return links_to_merge
 def combine(doc: Doc, correfs: set[str]=set(), is_query: bool = False, corefs_clusters: list[CorrefCluster] = []) -> list[Span]:
+    """Select entity, phrase, predicate, modifier, and coreference spans to merge."""
+
+    # Span categories are accumulated into a shared token-occupancy set so the
+    # final reverse-sorted list is safe for one spaCy retokenization pass.
     spans_to_merge: list[Span] = []
     ent_token_idxs: set[int] = set()
     bigram_lr_scores = _calc_bigram_likelihood_scores(doc)
@@ -379,6 +391,8 @@ def combine(doc: Doc, correfs: set[str]=set(), is_query: bool = False, corefs_cl
                 continue
             spans_to_merge.append(span)
             ent_token_idxs.update(range(span.start, span.end))
+    # Coreference indices must be repaired against all earlier merges before
+    # their mentions are appended to the retokenization plan.
     corefs_clusters, corref_to_merge = CorrefCluster.fixup_clusters(corefs_clusters, spans_to_merge)
     spans_to_merge.extend(corref_to_merge)
     spans_to_merge = sorted(spans_to_merge, key=lambda s: s.start, reverse=True)

@@ -1,3 +1,5 @@
+"""Exercise the PyO3 NetworkX adapter against optional graph fixtures."""
+
 from math import e
 import time
 import simulation
@@ -12,6 +14,8 @@ if os.path.exists(simulation_test_path):
         if os.path.isfile(file_path):
             files.append(file_path)
 def attr_same(attr1: dict, attr2: dict):
+    """Compare the label attribute used by the fixture graphs."""
+
     label1 = attr1.get("label")
     label2 = attr2.get("label")
     return label1 == label2

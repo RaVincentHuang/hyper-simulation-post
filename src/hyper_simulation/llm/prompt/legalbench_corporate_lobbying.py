@@ -1,3 +1,5 @@
+"""Prompt text for LegalBench corporate-lobbying classification."""
+
 LEGALBENCH_CORPORATE_LOBBYING_BASE = """### Bill:
 {context_text}
 {question}

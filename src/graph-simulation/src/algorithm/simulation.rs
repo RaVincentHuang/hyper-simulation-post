@@ -1,9 +1,15 @@
+//! Classical graph simulation and related labelled variants.
+//!
+//! Each implementation computes a greatest relation by removing candidate
+//! pairs that cannot match the required predecessor or successor structure.
+
 use graph_base::interfaces::graph::{Adjacency, AdjacencyInv, Graph, Directed};
 use graph_base::interfaces::labeled::{Labeled, LabeledAdjacency};
 
 use std::cell::RefCell;
 use std::collections::{HashSet, HashMap};
 pub trait Simulation<'a> {
+    /// Node type whose references are stored in the returned relation.
     type Node: 'a;
 
     fn get_simulation(&'a self) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
@@ -245,6 +251,7 @@ where
 }
 
 pub trait HyperSimulation<'a> {
+    /// Node type used by this legacy graph-oriented helper trait.
     type Node: 'a;
 
     fn get_hyper_simulation_inter(&'a self, other: &'a Self) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;

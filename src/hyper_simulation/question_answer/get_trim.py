@@ -1,3 +1,5 @@
+"""Run the legacy relation, rewrite, retrieval, and evidence-trimming stages."""
+
 import hyper_simulation.question_answer.vmdit.retrieval as retrieval
 import hyper_simulation.question_answer.vmdit.relation as relation
 import hyper_simulation.question_answer.vmdit.rewrite as rewrite
@@ -6,6 +8,7 @@ if __name__ == "__main__":
     task_names = ["popqa_longtail_w_gs", "triviaqa_test_w_gs", "health_claims_processed", "arc_challenge_processed"]
     task_id = 0
     for task_id in range(1, 4):
+        # Each stage persists the artifact consumed by the following stage.
         data_path = f"data/eval_data/{task_names[task_id]}.jsonl"
         rewrite_path = f"data/new/{task_names[task_id]}.jsonl"
         rel_path = f"data/relation/relation_context_{task_names[task_id]}.json"

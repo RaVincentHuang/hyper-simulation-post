@@ -1,3 +1,5 @@
+"""Normalize generated answers and compute QA evaluation metrics."""
+
 from typing import Dict
 from hyper_simulation.question_answer.vmdit.metrics import (
     exact_match_score, 
@@ -6,6 +8,8 @@ from hyper_simulation.question_answer.vmdit.metrics import (
     match
 )
 def evaluate_answer(prediction: str, ground_truth: list | str) -> Dict[str, float]:
+    """Compute exact-match, token F1, and substring-match scores."""
+
     if isinstance(ground_truth, list):
         ground_truths = ground_truth
     else:
@@ -21,6 +25,8 @@ def evaluate_answer(prediction: str, ground_truth: list | str) -> Dict[str, floa
         "match": match_score
     }
 def postprocess_answer(answer: str) -> tuple[str, str, bool]:
+    """Extract a concise answer and report whether a fallback parser was used."""
+
     import re
     import logging
     logger = logging.getLogger(__name__)
@@ -43,6 +49,7 @@ def postprocess_answer(answer: str) -> tuple[str, str, bool]:
         cleaned = extracted.strip(" .,;:!?\"'")
         if cleaned:
             return cleaned, parse_status, False
+    # Prefer the final short content line when the expected answer marker is absent.
     lines = answer.strip().split('\n')
     exclude_keywords = ['step', 'reason', 'explain', 'note', 'context', 
                        'paragraph', 'think', 'analysis', 'conclusion']

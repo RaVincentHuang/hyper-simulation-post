@@ -1,3 +1,5 @@
+"""Evaluate QA methods over supplied contexts, with resumable persistence."""
+
 import sentencepiece
 import json
 import re
@@ -27,6 +29,8 @@ def run_rag_evaluation(
     save_prompts_only: bool = False,
     load_prompts: str = None
 ):
+    """Run batched prompting and metrics, optionally resuming or saving prompts."""
+
     print(f"Loading data from {data_path}...")
     data: List[Dict[str, Any]] = load_data(data_path, task, using_support_only)
     print(f"Loaded {len(data)} samples")
@@ -35,6 +39,7 @@ def run_rag_evaluation(
     if output_path:
         out_file = Path(output_path) / f"{task}.json"
         if out_file.exists():
+            # Question text is the legacy checkpoint key used to skip completed work.
             try:
                 with open(out_file, 'r', encoding='utf-8') as f:
                     old_data = json.load(f)
@@ -58,6 +63,7 @@ def run_rag_evaluation(
             with open(load_prompts, 'r', encoding='utf-8') as f:
                 prompts_data = json.load(f)
         print(f"✅ 已加载 {len(prompts_data)} 条 Prompts")
+        # A loaded prompt artifact still honors results already present on disk.
         prompts_data = [p for p in prompts_data if p.get('question') not in processed_questions]
         print(f"📝 剩余 {len(prompts_data)} 条待处理 Prompts")
     if load_prompts:
@@ -79,6 +85,7 @@ def run_rag_evaluation(
     if not load_prompts and not save_prompts_only:
         print(f"Initializing LLM: {model_name}")
         if build or method != "hyper_simulation":
+            # Delay optional model imports until a generation path actually needs them.
             from langchain_ollama import ChatOllama
             from hyper_simulation.llm.chat_completion import get_generate
             model = ChatOllama(model=model_name, temperature=temperature, top_p=0.95, reasoning=False, timeout=300)
@@ -136,6 +143,7 @@ def run_rag_evaluation(
                 continue
             method_start = time.time()
             if method == "vanilla":
+                # Method adapters all return QueryInstances with a common prompt contract.
                 fixed_query_instances = query_instances
             elif method == "contradoc":
                 from hyper_simulation.baselines.contradoc import query_fixup
@@ -154,13 +162,16 @@ def run_rag_evaluation(
                 fixed_query_instances = [run_bsim_for_query(qi, task=task) for qi in query_instances]
             elif method == "hyper_simulation":
                 if not build:
+                    # Hypergraph construction is a persisted first phase; evaluation resumes later.
                     from hyper_simulation.component.build_hypergraph import build_hypergraph_batch_gpu
                     build_hypergraph_batch_gpu(query_instances, dataset_name=task, force_rebuild=rebuild, batch_size=128)
                     print("Hypergraph built. Please re-run with --build to evaluate.")
                     pbar.update(len(filtered_batch))
                     continue
                 else:
-                    from hyper_simulation.component.consistent import query_fixup
+                    # The QA pipeline consumes the central component library;
+                    # the separate QA CLI owns no solver implementation.
+                    from hyper_simulation.component.hyper_simulation import query_fixup
                     fixed_query_instances = [query_fixup(qi, task) for qi in query_instances]
             else:
                 raise ValueError(f"Unsupported method: {method}")
@@ -203,6 +214,7 @@ def run_rag_evaluation(
                 }
                 prompts_buffer.append(prompt_entry)
             if len(prompts_buffer) >= save_interval:
+                # Append bounded chunks so long prompt-generation runs are resumable.
                 with jsonlines.open(prompt_save_path, 'a') as writer:
                     for entry in prompts_buffer:
                         writer.write(entry)
@@ -214,6 +226,7 @@ def run_rag_evaluation(
         predictions = get_generate(prompts, model)
         gen_time = time.time() - gen_start
         n_samples = len(fixed_query_instances)
+        # Batch wall time is apportioned equally to keep per-item records comparable.
         batch_gen_time_per_item = gen_time / n_samples
         batch_method_time_per_item = method_time / n_samples
         for item, pred in zip(fixed_query_instances, predictions):
@@ -259,6 +272,7 @@ def run_rag_evaluation(
                 out_file = Path(output_path) / f"{task}.json"
                 out_file.parent.mkdir(parents=True, exist_ok=True)
                 temp_file = out_file.with_suffix('.tmp')
+                # Replace from a complete temporary file to avoid torn checkpoints.
                 with open(temp_file, 'w', encoding='utf-8') as f:
                     json.dump(output_data, f, indent=2, ensure_ascii=False)
                 temp_file.replace(out_file)
@@ -308,6 +322,8 @@ def run_rag_evaluation(
         print("="*60)
     return results, avg_metrics
 def main():
+    """Parse the evaluation CLI and run the selected evidence method."""
+
     parser = argparse.ArgumentParser(description="RAG Evaluation on HotpotQA without Retrieval")
     parser.add_argument(
         '--data_path',
@@ -386,6 +402,7 @@ def main():
         help='Path to a saved prompts file (jsonl or json) to load and run LLM directly.'
     )
     args = parser.parse_args()
+    # Preserve the legacy two-phase CLI: --build means artifacts already exist.
     build_flag = args.build == False
     rebuild_flag = args.rebuild == True
     using_support_only_flag = args.using_support_only == True

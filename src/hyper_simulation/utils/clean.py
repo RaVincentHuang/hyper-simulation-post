@@ -1,8 +1,12 @@
+"""In-place cleanup and metric-repair utilities for local evaluation data."""
+
 import re
 import os
 import json
 from pathlib import Path
 def clean_text_for_spacy(text: str) -> str:
+    """Normalize whitespace, citation markers, and dash variants for spaCy."""
+
     if not text:
         return ""
     text = re.sub(r'\[n\s+\d+\]', '', text)
@@ -11,6 +15,8 @@ def clean_text_for_spacy(text: str) -> str:
     text = re.sub(r'[–—―]', '-', text)
     return text
 def deduplicate_jsonl_files():
+    """Deduplicate configured JSONL trees by question, rewriting files in place."""
+
     target_dirs = [
         "/home/vincent/hyper-simulation/data/baseline",
         "/home/vincent/hyper-simulation/data/mid_result",
@@ -44,8 +50,10 @@ def deduplicate_jsonl_files():
                                     seen_questions.add(question)
                                 unique_lines.append(line)
                         except json.JSONDecodeError:
+                            # Preserve malformed rows rather than silently losing data.
                             unique_lines.append(line)
                 if len(unique_lines) < original_count:
+                    # Persist only when duplicates were actually removed.
                     with open(filepath, 'w', encoding='utf-8') as f:
                         for line in unique_lines:
                             f.write(line + '\n')
@@ -55,6 +63,8 @@ def deduplicate_jsonl_files():
             except Exception as e:
                 print(f"  ❌ 处理文件 {filepath} 时出错: {e}")
 def deduplicate_json_files():
+    """Deduplicate configured JSON result files and synchronize count metadata."""
+
     target_dirs = [
         "/home/vincent/hyper-simulation/data/baseline",
         "/home/vincent/hyper-simulation/data/mid_result",
@@ -86,6 +96,7 @@ def deduplicate_json_files():
                             seen_questions.add(question)
                         unique_results.append(item)
                 if len(unique_results) < original_count or data.get("total_processed") != len(unique_results):
+                    # Result rows and summary counters form one persisted transaction.
                     data["results"] = unique_results
                     data["total_processed"] = len(unique_results)
                     if "config" in data:
@@ -112,12 +123,15 @@ def deduplicate_json_files():
             except Exception as e:
                 print(f"  ❌ 处理文件 {filepath} 时出错: {e}")
 def fix_arc_baseline_metrics():
+    """Repair ARC references, remove duplicate questions, and recompute metrics."""
+
     import jsonlines
     from pathlib import Path
     from hyper_simulation.question_answer.utils.post_answer import evaluate_answer
     answer_map = {}
     reference_file = "/home/vincent/hyper-simulation/data/retr_result/arc/arc_with_context.jsonl"
     if os.path.exists(reference_file):
+        # Load references in increasing specificity; later sources override keys.
         with jsonlines.open(reference_file) as reader:
             for item in reader:
                 q = item.get('question', '').strip()
@@ -167,6 +181,7 @@ def fix_arc_baseline_metrics():
                 if not current_ans or current_ans == ["[]"] or current_ans == []:
                     ans = answer_map.get(q_clean)
                     if not ans:
+                        # Historical outputs may differ only by appended option text.
                         for mq, ma in answer_map.items():
                             if q_clean.startswith(mq) or mq.startswith(q_clean):
                                 ans = ma
@@ -180,6 +195,7 @@ def fix_arc_baseline_metrics():
                 if ref == ["[]"]:
                     ref = []
                 if ref:
+                    # Recompute each row before rebuilding aggregate statistics.
                     metrics = evaluate_answer(pred, ref)
                     item["metrics"] = metrics
                     item["is_correct"] = metrics["exact_match"] > 0
@@ -202,11 +218,14 @@ def fix_arc_baseline_metrics():
                 for k, v in all_metrics.items()
             }
             with open(arc_file, 'w', encoding='utf-8') as f:
+                # Write repaired rows and derived metrics together.
                 json.dump(data, f, indent=2, ensure_ascii=False)
             print(f"  ✅ 修复完成，共计 {len(fixed_results)} 条。Accuracy: {data['avg_metrics'].get('exact_match', 0):.4f}")
         except Exception as e:
             print(f"❌ 修复文件 {arc_file} 失败: {e}")
 def deduplicate_musique_eval_data():
+    """Deduplicate the local MuSiQue evaluation JSONL by its question key."""
+
     filepath = "/home/vincent/hyper-simulation/data/eval_data/musique_answerable.jsonl"
     if not os.path.exists(filepath):
         print(f"⚠️ {filepath} 不存在，跳过。")
@@ -231,8 +250,10 @@ def deduplicate_musique_eval_data():
                         seen_ids.add(item_id)
                         unique_lines.append(line)
                 except json.JSONDecodeError:
+                    # Keep unparsable rows available for later manual repair.
                     unique_lines.append(line)
         if len(unique_lines) < original_count:
+            # Avoid rewriting an already unique evaluation file.
             with open(filepath, 'w', encoding='utf-8') as f:
                 for line in unique_lines:
                     f.write(line + '\n')

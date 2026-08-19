@@ -1,3 +1,5 @@
+"""Chat prompts used by the VMDIT evidence-processing workflow."""
+
 from langchain_core.prompts import ChatPromptTemplate
 same_statements = ChatPromptTemplate.from_messages([
     ("system", "You are a language learning assistant. Are the following statements similar with the question? Just Say True if they are; otherwise just say False. Only output one word."),

@@ -1,3 +1,5 @@
+"""Prompt-based contradiction and entailment annotations for retrieved text."""
+
 import re
 from hyper_simulation.llm.prompt.contradoc import contradoc_prompt, contradoc_entailment_prompt
 from hyper_simulation.query_instance import QueryInstance
@@ -5,6 +7,8 @@ from langchain_ollama import ChatOllama
 from hyper_simulation.llm.chat_completion import get_generate
 import json
 def _parse_evidence(response_text: str) -> str:
+    """Extract and flatten the prompt protocol's JSON evidence list."""
+
     evidence_match = re.search(r'Evidence:\s*(\[.*?\])', response_text, re.DOTALL)
     if not evidence_match:
         return ""
@@ -14,14 +18,21 @@ def _parse_evidence(response_text: str) -> str:
         if evidence_list:
             return "\n".join([" | ".join(pair) if isinstance(pair, list) else str(pair) for pair in evidence_list])
     except (json.JSONDecodeError, ValueError):
+        # Retain malformed evidence verbatim so the model output remains traceable.
         return evidence_text
     return ""
 def _parse_yes_no_judgment(response_text: str) -> bool | None:
+    """Parse an explicit yes/no judgment, returning ``None`` when absent."""
+
     match = re.search(r'judg(?:e)?ment\s*:\s*(yes|no)', response_text, re.IGNORECASE)
     if not match:
         return None
     return match.group(1).lower().strip() == 'yes'
 def judge_contradiction_batch(doc_a_list: list[str], doc_b_list: list[str], model: ChatOllama) -> list[tuple[bool, str]]:
+    """Judge paired documents for contradiction in a single prompt batch."""
+
+    # ``zip`` defines the pairing contract and intentionally truncates to the
+    # shorter input sequence, matching the downstream result zip.
     prompts = [contradoc_prompt.format(doc_a=doc_a, doc_b=doc_b) for doc_a, doc_b in zip(doc_a_list, doc_b_list)]
     responses = get_generate(prompts=prompts, model=model)
     results = []
@@ -41,6 +52,7 @@ def judge_contradiction_batch(doc_a_list: list[str], doc_b_list: list[str], mode
             elif token in {"no", "non-contradiction", "entailment", "neutral"}:
                 has_contradiction = False
         else:
+            # Fall back to conservative keyword parsing for legacy responses.
             if "non-contradiction" in response_lower or "no contradiction" in response_lower:
                 has_contradiction = False
             elif "contradiction" in response_lower:
@@ -49,6 +61,8 @@ def judge_contradiction_batch(doc_a_list: list[str], doc_b_list: list[str], mode
         results.append((has_contradiction, evidence_str))
     return results
 def judge_entailment_batch(doc_a_list: list[str], doc_b_list: list[str], model: ChatOllama) -> list[tuple[bool, str]]:
+    """Judge paired documents for entailment in a single prompt batch."""
+
     prompts = [contradoc_entailment_prompt.format(doc_a=doc_a, doc_b=doc_b) for doc_a, doc_b in zip(doc_a_list, doc_b_list)]
     responses = get_generate(prompts=prompts, model=model)
     results = []
@@ -57,6 +71,7 @@ def judge_entailment_batch(doc_a_list: list[str], doc_b_list: list[str], model: 
         response_lower = response_text.lower()
         judgment = _parse_yes_no_judgment(response_text)
         if judgment is None:
+            # Explicit negative phrases take precedence over the bare keyword.
             if "non-entailment" in response_lower or "not entail" in response_lower:
                 is_entailment = False
             elif "entailment" in response_lower:
@@ -69,6 +84,8 @@ def judge_entailment_batch(doc_a_list: list[str], doc_b_list: list[str], model: 
         results.append((is_entailment, evidence_str))
     return results
 def query_fixup(query: QueryInstance, model: ChatOllama) -> QueryInstance:
+    """Annotate contradictory retrieved documents while preserving their order."""
+
     fixed_data = []
     judgments = judge_contradiction_batch([query.query]*len(query.data), query.data, model=model)
     for doc, (has_contradiction, evidence) in zip(query.data, judgments):

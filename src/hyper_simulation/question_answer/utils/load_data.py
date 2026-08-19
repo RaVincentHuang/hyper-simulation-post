@@ -1,8 +1,12 @@
+"""Load supported QA datasets into a shared normalized record schema."""
+
 import json
 import jsonlines
 from typing import List, Dict, Any
 from pathlib import Path
 def load_hotpotqa_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load HotpotQA JSON or JSONL records with paired context sentences."""
+
     data = []
     path = Path(file_path)
     paths = []
@@ -54,6 +58,8 @@ def load_hotpotqa_data(file_path: str) -> List[Dict[str, Any]]:
             raise ValueError("Unsupported file format. Please use .json or .jsonl")
     return data
 def load_musique_data(file_path: str, use_supporting_only: bool = True) -> List[Dict[str, Any]]:
+    """Load MuSiQue JSONL records, optionally retaining only supporting passages."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = []
@@ -73,6 +79,7 @@ def load_musique_data(file_path: str, use_supporting_only: bool = True) -> List[
                 supporting_flags = []
                 for p in paragraphs:
                     is_supporting = bool(p.get("is_supporting", False))
+                    # Filtering occurs before normalization so flags stay aligned to contexts.
                     if use_supporting_only and not is_supporting:
                         continue
                     title = (p.get("title") or "").strip()
@@ -96,6 +103,8 @@ def load_musique_data(file_path: str, use_supporting_only: bool = True) -> List[
                 data.append(formatted_item)
     return data
 def load_multihop_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load multihop evidence lists as normalized supporting contexts."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = []
@@ -129,6 +138,8 @@ def load_multihop_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_arc_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load ARC records with rendered choices and resolved answer text."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = []
@@ -159,6 +170,7 @@ def load_arc_data(file_path: str) -> List[Dict[str, Any]]:
                         idx = options_label.index(answer_label)
                         answer_text = options_text[idx]
                     except (ValueError, IndexError):
+                        # Preserve an unknown label rather than dropping the gold answer.
                         answer_text = answer_label
                 context = []
                 supporting_flags = []
@@ -181,6 +193,8 @@ def load_arc_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_contract_qa_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load contract-clause QA records from one file or a directory."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = [path] if not path.is_dir() else list(path.glob("*.jsonl"))
@@ -206,6 +220,8 @@ def load_contract_qa_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_consumer_contracts_qa_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load consumer terms-of-service QA records."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = [path] if not path.is_dir() else list(path.glob("*.jsonl"))
@@ -231,6 +247,8 @@ def load_consumer_contracts_qa_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_privacy_policy_qa_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load privacy-policy QA records with a canonical context type."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = [path] if not path.is_dir() else list(path.glob("*.jsonl"))
@@ -256,6 +274,8 @@ def load_privacy_policy_qa_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_rule_qa_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load rule-reasoning QA records, accepting question-only examples."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = [path] if not path.is_dir() else list(path.glob("*.jsonl"))
@@ -268,6 +288,7 @@ def load_rule_qa_data(file_path: str) -> List[Dict[str, Any]]:
                 text = (item.get("text") or "").strip()
                 answer = (item.get("answer") or "").strip()
                 if not question and text and text.endswith("?"):
+                    # Some exports place a standalone question in the text field.
                     question = text
                     text = ""
                 if not question:
@@ -284,6 +305,8 @@ def load_rule_qa_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_legalbench_qa_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load generic LegalBench QA JSONL records."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = []
@@ -306,6 +329,8 @@ def load_legalbench_qa_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_sara_entailment_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load SARA entailment records and normalize their class labels."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = [path] if not path.is_dir() else list(path.glob("*.jsonl"))
@@ -338,6 +363,8 @@ def load_sara_entailment_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_privacy_policy_entailment_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load privacy-policy entailment examples."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     paths = [path] if not path.is_dir() else list(path.glob("*.jsonl"))
@@ -360,6 +387,8 @@ def load_privacy_policy_entailment_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_legalbench_insurance_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load LegalBench insurance-policy interpretation records."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     if path.is_dir():
@@ -381,6 +410,8 @@ def load_legalbench_insurance_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_legalbench_corporate_lobbying_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load corporate-lobbying examples and derive their company questions."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     if path.is_dir():
@@ -405,6 +436,8 @@ def load_legalbench_corporate_lobbying_data(file_path: str) -> List[Dict[str, An
                 data.append(formatted_item)
     return data
 def load_legalbench_scalr_data(file_path: str) -> List[Dict[str, Any]]:
+    """Load SCALR cases with rendered multiple-choice options."""
+
     data: List[Dict[str, Any]] = []
     path = Path(file_path)
     if path.is_dir():
@@ -446,6 +479,8 @@ def load_legalbench_scalr_data(file_path: str) -> List[Dict[str, Any]]:
                 data.append(formatted_item)
     return data
 def load_data(file_path: str, task: str = "hotpotqa", use_supporting_only: bool = False) -> List[Dict[str, Any]]:
+    """Dispatch to the task loader or aggregate all available LegalBench tasks."""
+
     if task == "legalbench":
         legalbench_tasks = [
             (load_contract_qa_data, "QA/contract_qa.jsonl", "contract"),
@@ -463,6 +498,7 @@ def load_data(file_path: str, task: str = "hotpotqa", use_supporting_only: bool 
         for loader, subpath, ctx_type in legalbench_tasks:
             task_path = base_path / subpath
             if task_path.exists():
+                # A malformed optional subdataset should not hide other valid subsets.
                 try:
                     sub_data = loader(str(task_path))
                     for item in sub_data:

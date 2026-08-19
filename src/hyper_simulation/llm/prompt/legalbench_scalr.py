@@ -1,3 +1,5 @@
+"""Prompt text for LegalBench SCALR multiple-choice cases."""
+
 LEGALBENCH_SCALR_BASE = """### Supreme Court Case and Legal Principle:
 {context_text}
 {question}

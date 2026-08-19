@@ -1,3 +1,5 @@
+"""Prompt text for LegalBench privacy-policy entailment."""
+
 LEGALBENCH_PRIVACY_POLICY_ENTAILMENT_BASE = """### Privacy Policy:
 {context_text}
 {question}

@@ -1,263 +1,418 @@
-import itertools
-from platform import node
-import time
-from typing import Dict, List, Set, Tuple, Optional
-from hyper_simulation.hypergraph.hypergraph import Hyperedge, Hypergraph, Node, Vertex, LocalDoc
-from hyper_simulation.hypergraph.linguistic import QueryType, Pos, Tag, Dep, Entity
-import numpy as np
-import logging
-from hyper_simulation.component.embedding import get_embedding_batch, get_cosine_similarity_batch, get_similarity_batch, get_similarity
-from hyper_simulation.component.nli import get_nli_label, get_nli_labels_batch, get_nli_remix_score_batch
-from hyper_simulation.utils.log import getLogger
-from hyper_simulation.component.denial import get_top_k_matched_vertices
-from hyper_simulation.hypergraph.path import find_shortest_hyperpaths, find_shortest_hyperpaths_local
-from hyper_simulation.component.semantic_cluster import SemanticCluster
-from hyper_simulation.hypergraph.entity import ENT
-def query_same_type(v1: Vertex, v2: Vertex) -> bool:
-    if v1.query_type():
-        return False
-    qt = v1.query_type()
-    v2_type = v2.type()
-    if qt == QueryType.PERSON and v2_type:
-        return v2_type == ENT.PERSON
-    elif qt == QueryType.TIME and v2_type:
-        return v2_type == ENT.TEMPORAL
-    elif qt == QueryType.LOCATION and v2_type:
-        return v2_type in {ENT.GPE, ENT.LOC, ENT.FAC, ENT.ORG}
-    elif qt == QueryType.NUMBER and v2_type:
-        return v2_type == ENT.NUMBER
-    elif qt == QueryType.ATTRIBUTE:
-        return v2.pos_equal(Pos.ADJ) or v2.pos_equal(Pos.ADV)
-    return False
-def _construct_description_from_path(path: list[list[Node]], start_node: Node, end_node: Node) -> str:
-    type_nodes_map: dict[str, set[Node]] = {
-        "LOCATION": set(),
-        "TEMPORAL": set(),
-        "ATTRIBUTE": set(),
-        "PERSON": set(),
-        "COMPONENTS": set(),
-        "REASON": set(),
-        "CONCEPT": set(),
-        "NUMBER": set(),
-        "ORGANISM": set(),
-        "FOOD": set(),
-        "MEDICAL": set(),
-        "ANATOMY": set(),
-        "SUBSTANCE": set(),
-        "ASTRO": set(),
-        "AWARD": set(),
-        "VEHICLE": set(),
-        "COUNTRY": set(),
-        "ORGANIZATION": set(),
-        "FACILITY": set(),
-        "Geopolitical": set(),
-        "NORP": set(),
-        "PRODUCT": set(),
-        "WORK_OF_ART": set(),
-        "LAW": set(),
-        "LANGUAGE": set(),
-        "OCCUPATION": set(),
-        "EVENT": set(),
-        "THEORY": set(),
-        "GROUP": set(),
-        "FEATURE": set(),
-        "ECONOMIC": set(),
-        "SOCIOLOGY": set(),
-        "PHENOMENON": set(),
+"""D-match scoring, constrained decoding, and compatibility entry points.
+
+D-match is a relation between role vertices, not between surface positions.
+Consequently active/passive realizations and converse predicates (for example,
+``sell`` versus ``buy``) may align different surface roles when their canonical
+frames describe the same participant.  A scorer supplies those semantic cell
+scores; this module enforces the mathematical constraints around the scorer.
+The embedding/path estimator is exposed through lazy compatibility functions,
+so its optional model stack is not an import-time dependency of this module.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import importlib
+import math
+from typing import Callable, Iterable, Mapping, Protocol, Sequence
+
+from .contracts import (
+    Cluster,
+    DMatchDecision,
+    HCCandidate,
+    Hypergraph,
+    LEXICAL_KINDS,
+    Pair,
+    Vertex,
+    iter_cluster_roles,
+    validate_pairs_exist,
+)
+from .scoring import EmbeddingBackend, TYPE_GROUPS
+
+
+DMATCH_EMBEDDING_PROMPT = (
+    "Represent the marked participant role in this n-ary fact. Match roles by "
+    "their real semantics, including active/passive voice and converse frames; "
+    "do not match them merely because they have the same surface position."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RoleCell:
+    """One candidate role pair rendered in masked and target-surface views."""
+
+    pair: Pair
+    query_roles: tuple[str, ...]
+    data_roles: tuple[str, ...]
+    query_masked_text: str
+    data_masked_text: str
+    query_target_text: str
+    data_target_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoleScoringResult:
+    """Scorer probabilities plus an optional whole-relation conflict signal."""
+
+    scores: Mapping[Pair, float]
+    relation_conflict: bool = False
+
+    def __post_init__(self) -> None:
+        for pair, score in self.scores.items():
+            if len(pair) != 2 or not all(str(value) for value in pair):
+                raise ValueError("role scores must use non-empty node pairs")
+            value = float(score)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError("role scores must be finite probabilities")
+
+
+class RoleCellScorer(Protocol):
+    """Structural interface for an injected semantic-role scorer."""
+
+    def score(self, cells: Sequence[RoleCell]) -> RoleScoringResult:
+        """Score a batch of candidate role cells."""
+
+        ...
+
+
+@dataclass(slots=True)
+class CallableRoleCellScorer:
+    """Adapt a plain callable to the role-cell scorer protocol."""
+
+    function: Callable[[Sequence[RoleCell]], RoleScoringResult]
+
+    def score(self, cells: Sequence[RoleCell]) -> RoleScoringResult:
+        """Delegate a cell batch to the wrapped callable."""
+
+        return self.function(cells)
+
+
+def default_type_compatible(query_vertex: Vertex, data_vertex: Vertex) -> bool:
+    """Conservative hard gate shared with h_v candidate generation."""
+
+    left = query_vertex.feature_type
+    right = data_vertex.feature_type
+    if left == right:
+        return True
+    return TYPE_GROUPS.get(left, left) == TYPE_GROUPS.get(right, right)
+
+
+def build_role_cells(
+    query: Hypergraph,
+    data: Hypergraph,
+    candidate: HCCandidate,
+    *,
+    hv_allowed_pairs: Iterable[Pair],
+    type_compatible: Callable[[Vertex, Vertex], bool] = default_type_compatible,
+) -> tuple[RoleCell, ...]:
+    """Build only h_v-allowed, type-compatible D-match cells."""
+
+    hv_allowed = validate_pairs_exist(hv_allowed_pairs, query, data)
+    query_roles = _roles_by_vertex(query, candidate.query_cluster)
+    data_roles = _roles_by_vertex(data, candidate.data_cluster)
+    result: list[RoleCell] = []
+    for query_id in sorted(query_roles):
+        query_vertex = query.vertex(query_id)
+        if not query_vertex.matchable:
+            continue
+        for data_id in sorted(data_roles):
+            data_vertex = data.vertex(data_id)
+            pair = (query_id, data_id)
+            if (
+                not data_vertex.matchable
+                or pair not in hv_allowed
+                or not type_compatible(query_vertex, data_vertex)
+            ):
+                continue
+            result.append(
+                RoleCell(
+                    pair=pair,
+                    query_roles=query_roles[query_id],
+                    data_roles=data_roles[data_id],
+                    query_masked_text=_render_role_side(
+                        query,
+                        candidate.query_cluster,
+                        query_id,
+                        query_roles[query_id],
+                        include_target_lexical=False,
+                    ),
+                    data_masked_text=_render_role_side(
+                        data,
+                        candidate.data_cluster,
+                        data_id,
+                        data_roles[data_id],
+                        include_target_lexical=False,
+                    ),
+                    query_target_text=_render_role_side(
+                        query,
+                        candidate.query_cluster,
+                        query_id,
+                        query_roles[query_id],
+                        include_target_lexical=True,
+                    ),
+                    data_target_text=_render_role_side(
+                        data,
+                        candidate.data_cluster,
+                        data_id,
+                        data_roles[data_id],
+                        include_target_lexical=True,
+                    ),
+                )
+            )
+    return tuple(result)
+
+
+def compute_dmatch(
+    query: Hypergraph,
+    data: Hypergraph,
+    candidate: HCCandidate,
+    scorer: RoleCellScorer,
+    *,
+    hv_allowed_pairs: Iterable[Pair],
+    anchor_pairs: Iterable[Pair],
+    threshold: float,
+    type_compatible: Callable[[Vertex, Vertex], bool] = default_type_compatible,
+) -> DMatchDecision:
+    """Score and decode one HC, abstaining on inference failure.
+
+    A *valid* semantic conflict is represented by an empty effective D-match.
+    A scorer exception is different evidence: it says nothing about semantics.
+    It therefore returns an explicit ``inference_error_abstain`` state.  The
+    pipeline omits that HC dependency, so dependency closure retains the current
+    node pair without inventing role matches from the h_v cross-product.
+    """
+
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("D-match threshold must be in [0, 1]")
+    anchors = validate_pairs_exist(anchor_pairs, query, data)
+    hv_allowed = validate_pairs_exist(hv_allowed_pairs, query, data)
+    if not anchors <= hv_allowed:
+        raise ValueError("D-match anchors must already pass h_v")
+    for left, right in anchors:
+        if not type_compatible(query.vertex(left), data.vertex(right)):
+            raise ValueError("D-match anchor failed the hard type gate")
+
+    cells = build_role_cells(
+        query,
+        data,
+        candidate,
+        hv_allowed_pairs=hv_allowed,
+        type_compatible=type_compatible,
+    )
+    try:
+        scored = scorer.score(cells)
+    except Exception:  # model/network/OOM errors are not semantic contradictions
+        return DMatchDecision(
+            pairs=frozenset(),
+            relation_conflict=False,
+            status="inference_error_abstain",
+        )
+    if scored.relation_conflict:
+        return DMatchDecision(
+            pairs=frozenset(), relation_conflict=True, status="relation_conflict"
+        )
+    legal_pairs = {cell.pair for cell in cells}
+    unknown = set(scored.scores) - legal_pairs
+    if unknown:
+        raise ValueError(f"role scorer returned illegal cells: {sorted(unknown)}")
+    pairs = stable_partial_one_to_one(scored.scores, threshold=threshold)
+    return DMatchDecision(
+        pairs=pairs,
+        status="ok" if cells else "no_compatible_roles",
+        pair_scores=tuple(
+            sorted((pair, float(scored.scores[pair])) for pair in pairs)
+        ),
+    )
+
+
+def stable_partial_one_to_one(
+    scores: Mapping[Pair, float], *, threshold: float
+) -> frozenset[Pair]:
+    """Greedily decode a reproducible partial one-to-one relation."""
+
+    normalized: list[tuple[Pair, float]] = []
+    for pair, raw_score in scores.items():
+        score = float(raw_score)
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise ValueError("D-match scores must be finite probabilities")
+        normalized.append(((str(pair[0]), str(pair[1])), score))
+
+    selected: set[Pair] = set()
+    used_left: set[str] = set()
+    used_right: set[str] = set()
+    for (left, right), score in sorted(
+        normalized,
+        key=lambda value: (-value[1], value[0][0], value[0][1]),
+    ):
+        if score < threshold or left in used_left or right in used_right:
+            continue
+        selected.add((left, right))
+        used_left.add(left)
+        used_right.add(right)
+    return frozenset(selected)
+
+
+class EmbeddingRoleScorer:
+    """Two-view embedding scorer; model loading remains outside the core."""
+
+    def __init__(
+        self,
+        backend: EmbeddingBackend,
+        *,
+        masked_weight: float = 0.5,
+        target_weight: float = 0.5,
+        conflict_detector: Callable[[Sequence[RoleCell]], bool] | None = None,
+    ) -> None:
+        if abs(masked_weight + target_weight - 1.0) > 1e-9:
+            raise ValueError("D-match view weights must sum to one")
+        self.backend = backend
+        self.masked_weight = masked_weight
+        self.target_weight = target_weight
+        self.conflict_detector = conflict_detector
+
+    def score(self, cells: Sequence[RoleCell]) -> RoleScoringResult:
+        """Score role cells from masked and target-surface embedding views."""
+
+        if not cells:
+            return RoleScoringResult({})
+        texts = tuple(
+            dict.fromkeys(
+                text
+                for cell in cells
+                for text in (
+                    cell.query_masked_text,
+                    cell.data_masked_text,
+                    cell.query_target_text,
+                    cell.data_target_text,
+                )
+            )
+        )
+        vectors = self.backend.encode(texts, prompt=DMATCH_EMBEDDING_PROMPT)
+        if len(vectors) != len(texts):
+            raise ValueError("embedding backend returned the wrong batch length")
+        cache = {text: tuple(float(value) for value in vector) for text, vector in zip(texts, vectors, strict=True)}
+        scores = {}
+        for cell in cells:
+            masked = (_cosine(
+                cache[cell.query_masked_text], cache[cell.data_masked_text]
+            ) + 1.0) / 2.0
+            target = (_cosine(
+                cache[cell.query_target_text], cache[cell.data_target_text]
+            ) + 1.0) / 2.0
+            scores[cell.pair] = self.masked_weight * masked + self.target_weight * target
+        conflict = bool(self.conflict_detector and self.conflict_detector(cells))
+        return RoleScoringResult(scores, relation_conflict=conflict)
+
+
+def _roles_by_vertex(graph: Hypergraph, cluster: Cluster) -> dict[str, tuple[str, ...]]:
+    mutable: dict[str, set[str]] = {}
+    for edge_id, role in iter_cluster_roles(graph, cluster):
+        vertex = graph.vertex(role.vertex_id)
+        if vertex.matchable:
+            edge = graph.edge(edge_id)
+            frame = edge.canonical_frame or graph.vertex(edge.predicate_id).text
+            mutable.setdefault(vertex.id, set()).add(f"{frame}:{role.name}")
+    return {key: tuple(sorted(values)) for key, values in mutable.items()}
+
+
+def _render_role_side(
+    graph: Hypergraph,
+    cluster: Cluster,
+    vertex_id: str,
+    roles: tuple[str, ...],
+    *,
+    include_target_lexical: bool,
+) -> str:
+    vertex = graph.vertex(vertex_id)
+    return (
+        f"frames={_cluster_frames(graph, cluster)}; "
+        f"target={_target_value(vertex, include_target_lexical)}; "
+        f"roles={','.join(roles)}"
+    )
+
+
+def _target_value(vertex: Vertex, include_lexical: bool) -> str:
+    if include_lexical and vertex.kind in LEXICAL_KINDS:
+        return vertex.text.strip().lower()
+    return f"<{vertex.feature_type}>"
+
+
+def _cluster_frames(graph: Hypergraph, cluster: Cluster) -> str:
+    values = []
+    for edge_id in cluster.edge_ids:
+        edge = graph.edge(edge_id)
+        predicate = graph.vertex(edge.predicate_id).text.strip().lower()
+        values.append(
+            f"{edge.canonical_frame or predicate}/{edge.voice}/{edge.polarity}/{edge.modality}"
+        )
+    return " | ".join(values)
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    if not left or len(left) != len(right):
+        raise ValueError("role embedding dimensions do not match")
+    if not all(math.isfinite(float(value)) for value in (*left, *right)):
+        raise ValueError("role embedding contains a non-finite value")
+    left_norm = math.sqrt(sum(float(value) ** 2 for value in left))
+    right_norm = math.sqrt(sum(float(value) ** 2 for value in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    score = sum(float(a) * float(b) for a, b in zip(left, right, strict=True)) / (
+        left_norm * right_norm
+    )
+    return max(-1.0, min(1.0, score))
+
+
+def _solver_module():
+    """Return the canonical module containing both solver implementations."""
+
+    return importlib.import_module("hyper_simulation.component.hyper_simulation")
+
+
+def calc_d_match(*args, **kwargs):
+    """Compatibility entry point for the embedding/path D-match estimator."""
+
+    return _solver_module().get_standard_symbol("calc_d_match")(*args, **kwargs)
+
+
+def calc_d_match_batch(*args, **kwargs):
+    """Compatibility entry point for batched embedding/path estimation."""
+
+    return _solver_module().get_standard_symbol("calc_d_match_batch")(*args, **kwargs)
+
+
+def __getattr__(name: str):
+    """Lazily expose remaining helpers used by compatibility scripts."""
+
+    if name not in _STANDARD_SYMBOLS:
+        raise AttributeError(name)
+    try:
+        return _solver_module().get_standard_symbol(name)
+    except AttributeError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+
+
+_STANDARD_SYMBOLS = frozenset(
+    {
+        "_construct_description_from_path",
+        "calc_d_match",
+        "calc_d_match_batch",
+        "query_same_type",
     }
-    node_type_map: dict[Node, str] = {}
-    start_node_type = start_node.type_str()
-    if start_node_type and start_node_type in type_nodes_map:
-        type_nodes_map[start_node_type].add(start_node)
-        index = len(type_nodes_map[start_node_type])
-        node_type_map[start_node] = f"{start_node_type}#{index}"
-    end_node_type = end_node.type_str()
-    if end_node_type and end_node_type in type_nodes_map:
-        type_nodes_map[end_node_type].add(end_node)
-        index = len(type_nodes_map[end_node_type])
-        node_type_map[end_node] = f"{end_node_type}#{index}"
-    description_parts = []
-    for nodes in path:
-        if not nodes:
-            continue
-        node_by_index = sorted(nodes, key=lambda n: n.index)
-        def node_text(n: Node) -> str:
-            if n in node_type_map:
-                return node_type_map[n]
-            node_type = n.type_str()
-            if node_type and node_type in type_nodes_map:
-                type_nodes_map[node_type].add(n)
-                index = len(type_nodes_map[node_type])
-                node_type_map[n] = f"{node_type}#{index}"
-                return node_type_map[n]
-            return n.text
-        node_texts = [node_text(node) for node in node_by_index]
-        description_parts.append(" ".join(node_texts))
-    return ". ".join(description_parts)
-def calc_d_match(sc1: SemanticCluster, sc2: SemanticCluster, threshold: float = 0.5) -> list[tuple[Vertex, Vertex, float]]:
-    R: list[tuple[Vertex, Vertex]] = []
-    for v1 in sc1.vertices:
-        for v2 in sc2.vertices:
-            if v1.is_query():
-                if query_same_type(v1, v2):
-                    R.append((v1, v2))
-                continue
-            if v1.is_verb() or v2.is_verb():
-                continue
-            if v1.type() == v2.type():
-                R.append((v1, v2))
-    R_map: Dict[Vertex, List[Vertex]] = {}
-    for v1, v2 in R:
-        if v1 not in R_map:
-            R_map[v1] = []
-        R_map[v1].append(v2)
-    score_items: list[tuple[str, str, Vertex, Vertex, int]] = []
-    for v1, v2 in R:
-        root_tuples: list[tuple[Vertex, Vertex]] = []
-        other_tuples: list[tuple[Vertex, Vertex]] = []
-        for hyperedge in sc1.hyperedges:
-            if v1 not in hyperedge.vertices:
-                continue
-            if v1 == hyperedge.root:
-                for v1_prime in hyperedge.vertices[1:]:
-                    root_tuples.append((v1, v1_prime))
-                continue
-            for v1_prime in hyperedge.vertices[1:]:
-                if v1_prime == v1:
-                    continue
-                other_tuples.append((v1, v1_prime))
-        candidate_pairs: list[tuple[Vertex, Vertex]] = []
-        for _, v1_prime in root_tuples:
-            for v2_prime in R_map.get(v1_prime, []):
-                candidate_pairs.append((v1_prime, v2_prime))
-        for _, v1_prime in other_tuples:
-            for v2_prime in R_map.get(v1_prime, []):
-                candidate_pairs.append((v1_prime, v2_prime))
-        for index, (v1_prime, v2_prime) in enumerate(candidate_pairs):
-            path1, v1_node, v1_prime_node = sc1.get_path_node_steps(v1, v1_prime)
-            path2, v2_node, v2_prime_node = sc2.get_path_node_steps(v2, v2_prime)
-            if not path1 or not path2 or v1_node is None or v2_node is None or v1_prime_node is None or v2_prime_node is None:
-                continue
-            desc1 = _construct_description_from_path(path1, start_node=v1_node, end_node=v1_prime_node)
-            desc2 = _construct_description_from_path(path2, start_node=v2_node, end_node=v2_prime_node)
-            score_items.append((desc1, desc2, v1, v2, index))
-    if not score_items:
-        return []
-    score_pairs = [(desc1, desc2) for desc1, desc2, _, _, _ in score_items]
-    scores = get_nli_remix_score_batch(score_pairs)
-    pair_index_max: dict[tuple[Vertex, Vertex], dict[int, float]] = {}
-    for (_, _, v1, v2, index), score in zip(score_items, scores):
-        key = (v1, v2)
-        if key not in pair_index_max:
-            pair_index_max[key] = {}
-        prev = pair_index_max[key].get(index)
-        if prev is None or score > prev:
-            pair_index_max[key][index] = score
-    raw_results: list[tuple[Vertex, Vertex, float]] = []
-    for (v1, v2), index_max_map in pair_index_max.items():
-        if not index_max_map:
-            continue
-        avg_score = sum(index_max_map.values()) / len(index_max_map)
-        if avg_score > threshold:
-            raw_results.append((v1, v2, avg_score))
-    raw_results.sort(key=lambda x: x[2], reverse=True)
-    used_v1: set[Vertex] = set()
-    used_v2: set[Vertex] = set()
-    results: list[tuple[Vertex, Vertex, float]] = []
-    for v1, v2, score in raw_results:
-        if v1 in used_v1 or v2 in used_v2:
-            continue
-        used_v1.add(v1)
-        used_v2.add(v2)
-        results.append((v1, v2, score))
-    return results
-def calc_d_match_batch(sc_pairs: list[tuple[SemanticCluster, SemanticCluster]], threshold: float = 0.5) -> list[list[tuple[Vertex, Vertex, float]]]:
-    start_time = time.time()
-    if not sc_pairs:
-        return []
-    score_pairs: list[tuple[str, str]] = []
-    score_meta: list[tuple[int, Vertex, Vertex, int]] = []
-    pair_index_max_by_pair: list[dict[tuple[Vertex, Vertex], dict[int, float]]] = [
-        {} for _ in range(len(sc_pairs))
-    ]
-    for pair_idx, (sc1, sc2) in enumerate(sc_pairs):
-        R: list[tuple[Vertex, Vertex]] = []
-        for v1 in sc1.vertices:
-            for v2 in sc2.vertices:
-                if v1.is_query():
-                    if query_same_type(v1, v2):
-                        R.append((v1, v2))
-                    continue
-                if v1.is_verb() or v2.is_verb():
-                    continue
-                if v1.type() == v2.type():
-                    R.append((v1, v2))
-        R_map: Dict[Vertex, List[Vertex]] = {}
-        for v1, v2 in R:
-            if v1 not in R_map:
-                R_map[v1] = []
-            R_map[v1].append(v2)
-        for v1, v2 in R:
-            root_tuples: list[tuple[Vertex, Vertex]] = []
-            other_tuples: list[tuple[Vertex, Vertex]] = []
-            for hyperedge in sc1.hyperedges:
-                if v1 not in hyperedge.vertices:
-                    continue
-                if v1 == hyperedge.root:
-                    for v1_prime in hyperedge.vertices[1:]:
-                        root_tuples.append((v1, v1_prime))
-                    continue
-                for v1_prime in hyperedge.vertices[1:]:
-                    if v1_prime == v1:
-                        continue
-                    other_tuples.append((v1, v1_prime))
-            candidate_pairs: list[tuple[Vertex, Vertex]] = []
-            for _, v1_prime in root_tuples:
-                for v2_prime in R_map.get(v1_prime, []):
-                    candidate_pairs.append((v1_prime, v2_prime))
-            for _, v1_prime in other_tuples:
-                for v2_prime in R_map.get(v1_prime, []):
-                    candidate_pairs.append((v1_prime, v2_prime))
-            for index, (v1_prime, v2_prime) in enumerate(candidate_pairs):
-                path1, v1_node, v1_prime_node = sc1.get_path_node_steps(v1, v1_prime)
-                path2, v2_node, v2_prime_node = sc2.get_path_node_steps(v2, v2_prime)
-                if not path1 or not path2 or v1_node is None or v2_node is None or v1_prime_node is None or v2_prime_node is None:
-                    continue
-                desc1 = _construct_description_from_path(path1, v1_node, v1_prime_node)
-                desc2 = _construct_description_from_path(path2, v2_node, v2_prime_node)
-                score_pairs.append((desc1, desc2))
-                score_meta.append((pair_idx, v1, v2, index))
-    if not score_pairs:
-        return [[] for _ in sc_pairs]
-    time1 = time.time()
-    scores = get_nli_remix_score_batch(score_pairs)
-    time2 = time.time()
-    for (pair_idx, v1, v2, index), score in zip(score_meta, scores):
-        pair_map = pair_index_max_by_pair[pair_idx]
-        key = (v1, v2)
-        if key not in pair_map:
-            pair_map[key] = {}
-        prev = pair_map[key].get(index)
-        if prev is None or score > prev:
-            pair_map[key][index] = score
-    all_results: list[list[tuple[Vertex, Vertex, float]]] = []
-    for pair_map in pair_index_max_by_pair:
-        raw_results: list[tuple[Vertex, Vertex, float]] = []
-        for (v1, v2), index_max_map in pair_map.items():
-            if not index_max_map:
-                continue
-            avg_score = sum(index_max_map.values()) / len(index_max_map)
-            if avg_score > threshold:
-                raw_results.append((v1, v2, avg_score))
-        raw_results.sort(key=lambda x: x[2], reverse=True)
-        used_v1: set[Vertex] = set()
-        used_v2: set[Vertex] = set()
-        results: list[tuple[Vertex, Vertex, float]] = []
-        for v1, v2, score in raw_results:
-            if v1 in used_v1 or v2 in used_v2:
-                continue
-            used_v1.add(v1)
-            used_v2.add(v2)
-            results.append((v1, v2, score))
-        all_results.append(results)
-    return all_results
+)
+
+
+__all__ = [
+    "CallableRoleCellScorer",
+    "DMATCH_EMBEDDING_PROMPT",
+    "EmbeddingRoleScorer",
+    "RoleCell",
+    "RoleCellScorer",
+    "RoleScoringResult",
+    "build_role_cells",
+    "calc_d_match",
+    "calc_d_match_batch",
+    "compute_dmatch",
+    "default_type_compatible",
+    "stable_partial_one_to_one",
+]

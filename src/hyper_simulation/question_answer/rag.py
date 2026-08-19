@@ -1,3 +1,5 @@
+"""Contriever-backed retrieval-augmented generation pipeline."""
+
 import torch
 import argparse
 import os
@@ -26,6 +28,8 @@ from hyper_simulation.question_answer.vmdit.utils import (
     preprocess_input_data
 )
 class RAGPipeline:
+    """Load retrieval assets and generate answers from ranked passages."""
+
     def __init__(self, 
                  retriever_model_path: str = "models/contriever-msmarco",
                  passages_path: str = "data/psgs_w100.tsv",
@@ -49,6 +53,7 @@ class RAGPipeline:
             import faiss
             import pickle
             print(f"⚡ Loading 65GB index via Memory-Mapped I/O (MMAP) to bypass RAM limit...")
+            # Memory-map the large persisted index instead of copying it into RAM.
             faiss_idx = faiss.read_index(index_file, faiss.IO_FLAG_MMAP | faiss.IO_FLAG_READ_ONLY)
             target_attr = "index" if hasattr(self.index, "index") else "faiss_index"
             setattr(self.index, target_attr, faiss_idx)
@@ -60,6 +65,7 @@ class RAGPipeline:
                 print(f"⚠️ Warning: Meta data not found at {meta_file}")
             print(f"✅ Index mapped successfully. Physical RAM usage stable.")            
         else:
+            # Fall back to rebuilding only when no serialized index is available.
             print(f"Index not found at {index_path}. Building from embeddings in {embedding_dir}...")
             input_paths = glob.glob(os.path.join(embedding_dir, "passages_*")) 
             input_paths = sorted(input_paths)
@@ -77,6 +83,8 @@ class RAGPipeline:
         print(f"Loading LLM {llm_model_name}...")
         self.llm = ChatOllama(model=llm_model_name, temperature=0.8, top_p=0.95)
     def retrieve(self, queries: List[str], top_k: int = 5) -> List[List[Dict]]:
+        """Embed queries and attach the top-ranked passages for each query."""
+
         args = SimpleNamespace(
             lowercase=False, 
             normalize_text=True, 
@@ -91,6 +99,8 @@ class RAGPipeline:
         add_passages(dummy_data, self.passage_id_map, top_ids_and_scores)
         return [item["ctxs"] for item in dummy_data]
     def generate(self, items: List[Dict], task: str = "qa", top_n: int = 5, save_prompts_only: bool = False, prompt_save_path: str = None) -> List[str]:
+        """Build task prompts, optionally persist them, or generate final answers."""
+
         prompts = []
         for item in items:
             retrieval_result = item.get("ctxs", [])[:top_n]
@@ -119,6 +129,7 @@ class RAGPipeline:
             )
             prompts.append(prompt)
         if save_prompts_only and prompt_save_path:
+            # Append prompt records so multiple retrieval batches share one artifact.
             prompts_buffer = []
             for item in items:
                 retrieval_result = item.get("ctxs", [])[:top_n]
@@ -155,6 +166,8 @@ class RAGPipeline:
             final_results.append(final_out)
         return final_results
     def run_batch(self, input_data: List[Dict], task: str = "qa", top_n: int = 5, save_prompts_only: bool = False, prompt_save_path: str = None):
+        """Retrieve contexts and generate outputs for a batch of input records."""
+
         queries = [item["question"] for item in input_data]
         print("--- Start Retrieval ---")
         ctxs_list = self.retrieve(queries, top_k=top_n)

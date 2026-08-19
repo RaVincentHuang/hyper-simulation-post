@@ -1,3 +1,5 @@
+"""Generic prompt text for LegalBench question answering."""
+
 LEGALBENCH_QA_BASE = """### Legal Document:
 {context_text}
 {question}

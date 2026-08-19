@@ -1,3 +1,5 @@
+"""Encode queries, build a Contriever index, and persist retrieval results."""
+
 import sys
 import os
 import argparse
@@ -21,6 +23,8 @@ from contrievers.evaluation import calculate_matches
 import contrievers.normalize_text
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 def embed_queries(args, queries, model, tokenizer):
+    """Encode query strings in GPU batches and return NumPy embeddings."""
+
     model.eval()
     embeddings = []
     batch_question = []
@@ -32,6 +36,7 @@ def embed_queries(args, queries, model, tokenizer):
                 q = contrievers.normalize_text.normalize(q)
             batch_question.append(q)
             if len(batch_question) == args.per_gpu_batch_size or k == len(queries) - 1:
+                # Flush the final partial batch to preserve one embedding per query.
                 encoded_batch = tokenizer(
                     batch_question,
                     return_tensors="pt",
@@ -46,6 +51,8 @@ def embed_queries(args, queries, model, tokenizer):
     embeddings = torch.cat(embeddings, dim=0)
     return embeddings.numpy()
 def index_encoded_data(index, embedding_files, indexing_batch_size):
+    """Stream embedding shards into an index in bounded batches."""
+
     allids = []
     allembeddings = np.array([])
     for i, file_path in enumerate(embedding_files):
@@ -53,11 +60,14 @@ def index_encoded_data(index, embedding_files, indexing_batch_size):
             ids, embeddings = pickle.load(fin)
         allembeddings = np.vstack((allembeddings, embeddings)) if allembeddings.size else embeddings
         allids.extend(ids)
+        # Carry an incomplete tail into the next shard without reordering IDs.
         while allembeddings.shape[0] > indexing_batch_size:
             allembeddings, allids = add_embeddings(index, allembeddings, allids, indexing_batch_size)
     while allembeddings.shape[0] > 0:
         allembeddings, allids = add_embeddings(index, allembeddings, allids, indexing_batch_size)
 def add_embeddings(index, embeddings, ids, indexing_batch_size):
+    """Add one bounded embedding slice and return the unconsumed tail."""
+
     end_idx = min(indexing_batch_size, embeddings.shape[0])
     ids_toadd = ids[:end_idx]
     embeddings_toadd = embeddings[:end_idx]
@@ -66,6 +76,8 @@ def add_embeddings(index, embeddings, ids, indexing_batch_size):
     index.index_data(ids_toadd, embeddings_toadd)
     return embeddings, ids
 def validate(data, workers_num):
+    """Compute retrieval answer-hit metadata and return per-document hits."""
+
     match_stats = calculate_matches(data, workers_num)
     top_k_hits = match_stats.top_k_hits
     top_k_hits = [v / len(data) for v in top_k_hits]
@@ -75,6 +87,8 @@ def validate(data, workers_num):
             message += f"R@{k}: {top_k_hits[k-1]} "
     return match_stats.questions_doc_hits
 def add_passages(data, passages, top_passages_and_scores):
+    """Attach ranked passage records and scores to query examples in place."""
+
     merged_data = []
     assert len(data) == len(top_passages_and_scores)
     for i, d in enumerate(data):
@@ -92,10 +106,14 @@ def add_passages(data, passages, top_passages_and_scores):
             for c in range(ctxs_num)
         ]
 def add_hasanswer(data, hasanswer):
+    """Attach answer-presence flags to retrieved contexts in place."""
+
     for i, ex in enumerate(data):
         for k, d in enumerate(ex["ctxs"]):
             d["hasanswer"] = hasanswer[i][k]
 def load_data(data_path):
+    """Load a JSON array or line-delimited JSON records."""
+
     if data_path.endswith(".json"):
         with open(data_path, "r") as fin:
             data = json.load(fin)
@@ -107,6 +125,8 @@ def load_data(data_path):
                 data.append(example)
     return data
 def calc_retrieval(data_path, rewrite_path):
+    """Run the legacy Contriever retrieval CLI for rewritten queries."""
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--data",
@@ -173,6 +193,7 @@ def calc_retrieval(data_path, rewrite_path):
     input_paths = sorted(input_paths)
     index_path = os.path.join(args.index_path)
     if args.load_index and os.path.exists(index_path):
+        # Reuse a persisted index only when explicitly requested and available.
         index.deserialize_from(index_path)
     else:
         print(f"Indexing passages from files {input_paths}")
@@ -180,6 +201,7 @@ def calc_retrieval(data_path, rewrite_path):
         index_encoded_data(index, input_paths, args.indexing_batch_size)
         print(f"Indexing time: {time.time()-start_time_indexing:.1f} s.")
         if args.save_index:
+            # Index persistence is opt-in because the artifact can be very large.
             index.serialize(index_path)
     passages = contrievers.data.load_passages(args.passages)
     passage_id_map = {x["id"]: x for x in passages}
@@ -198,6 +220,7 @@ def calc_retrieval(data_path, rewrite_path):
         hasanswer = validate(data, args.validation_workers)
         add_hasanswer(data, hasanswer)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Preserve JSONL ordering so retrieval rows remain aligned with source rows.
         with open(output_path, "w") as fout:
             for ex in data:
                 json.dump(ex, fout, ensure_ascii=False)

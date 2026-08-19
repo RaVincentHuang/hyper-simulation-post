@@ -1,3 +1,5 @@
+"""Denial checks that construct the initial non-conflict relation."""
+
 from hyper_simulation.hypergraph.hypergraph import Hyperedge, Hypergraph, Node, Vertex, LocalDoc
 from typing import Dict, List, Set, Tuple, Optional, Union
 from hyper_simulation.component.nli import get_nli_labels_with_score_batch, get_nli_label, get_nli_labels_batch
@@ -68,6 +70,8 @@ def _hard_type_match_only(u: Vertex, v: Vertex) -> Tuple[bool, str]:
         return False, f"Hard type-group mismatch: {u_group} != {v_group}"
     return True, f"Hard type-group matched: {u_group}"
 def is_not_denial_with_score_batch(vertices_pairs: list[tuple[Vertex, Vertex]]) -> List[Tuple[bool, float]]:
+    """Classify vertex pairs as non-denials and retain their NLI scores."""
+
     text_pairs = [(v2.text(), v1.text()) for v1, v2 in vertices_pairs]
     labels_with_score = get_nli_labels_with_score_batch(text_pairs)
     results: list[tuple[bool, float]] = []
@@ -78,6 +82,8 @@ def is_not_denial_with_score_batch(vertices_pairs: list[tuple[Vertex, Vertex]]) 
             results.append((False, score))
     return results
 def get_matched_vertices(vertices1: list[Vertex], vertices2: list[Vertex]) -> dict[Vertex, set[Tuple[Vertex, float]]]:
+    """Group all non-denial data vertices by query vertex."""
+
     matched_vertices: dict[Vertex, set[Tuple[Vertex, float]]] = {}
     vertices_pairs: list[tuple[Vertex, Vertex]] = []
     for v1 in vertices1:
@@ -95,6 +101,8 @@ def get_matched_vertices(vertices1: list[Vertex], vertices2: list[Vertex]) -> di
             matched_vertices[v1].add((v2, score))
     return matched_vertices
 def get_top_k_matched_vertices(matched_vertices: dict[Vertex, set[Tuple[Vertex, float]]], k: int) -> dict[Vertex, set[Tuple[Vertex, float]]]:
+    """Keep the highest-scoring ``k`` candidates for each query vertex."""
+
     top_k_matched_vertices: dict[Vertex, set[Tuple[Vertex, float]]] = {}
     for v1, matches in matched_vertices.items():
         sorted_matches = sorted(matches, key=lambda x: x[1], reverse=True)
@@ -105,6 +113,8 @@ def compute_allowed_pairs(
     query_vertices: Dict[int, Vertex],
     data_vertices: Dict[int, Vertex]
 ) -> Set[Tuple[int, int]]:
+    """Evaluate the scalar denial rule for every query-data vertex pair."""
+
     logger = getLogger("denial_comment")
     if not query_vertices or not data_vertices:
         if logger:
@@ -148,6 +158,8 @@ def compute_allowed_pairs_batch(
     query_vertices: Dict[int, Vertex],
     data_vertices: Dict[int, Vertex]
 ) -> Set[Tuple[int, int]]:
+    """Batch NLI inference while applying the hard type gate to each pair."""
+
     logger = getLogger("denial_comment")
     if not query_vertices or not data_vertices:
         if logger:
@@ -194,6 +206,8 @@ def compute_allowed_pairs_batch(
             logger.info("No contradicted pairs.")
     return allowed
 def denial_comment(u: Vertex, v: Vertex) -> Tuple[bool, str]:
+    """Explain whether a vertex pair survives the denial predicate."""
+
     ut = u.text().strip()
     vt = v.text().strip()
     if not ut or not vt:
@@ -252,6 +266,8 @@ def denial_comment(u: Vertex, v: Vertex) -> Tuple[bool, str]:
     else:
         return False, f"NLI={label} (contradiction)"
 def denial_comment_by_label(u: Vertex, v: Vertex, label: str) -> Tuple[bool, str]:
+    """Apply the denial predicate using a caller-supplied NLI label."""
+
     ut = u.text().strip()
     vt = v.text().strip()
     if not ut or not vt:
@@ -309,6 +325,8 @@ def denial_comment_by_label(u: Vertex, v: Vertex, label: str) -> Tuple[bool, str
     else:
         return False, f"NLI={label} (contradiction)"
 def denial_comment_by_label_hard(u: Vertex, v: Vertex, label: str) -> Tuple[bool, str]:
+    """Require both strict type compatibility and a non-contradiction label."""
+
     ut = u.text().strip()
     vt = v.text().strip()
     if not ut or not vt:
@@ -325,6 +343,8 @@ def compute_allowed_pairs_batch_with_score(
     query_vertices: Dict[int, Vertex],
     data_vertices: Dict[int, Vertex]
 ) -> Tuple[Set[Tuple[int, int]], Dict[Tuple[int, int], float]]:
+    """Return hard-filtered allowed pairs and their entailment confidence scores."""
+
     logger = getLogger("denial_comment")
     if not query_vertices or not data_vertices:
         if logger:
@@ -333,6 +353,8 @@ def compute_allowed_pairs_batch_with_score(
     candidate_pairs_metadata: List[Tuple[int, Vertex, int, Vertex]] = []
     candidate_text_pairs: List[Tuple[str, str]] = []
     filtered_by_type_count = 0
+    # Type filtering is a hard contract boundary: the NLI model is never asked
+    # to rescue a pair whose query and data types are incompatible.
     for q_id, q_vertex in query_vertices.items():
         for d_id, d_vertex in data_vertices.items():
             type_match, _ = _hard_type_match_only(q_vertex, d_vertex)
@@ -376,6 +398,8 @@ def compute_allowed_pairs_batch_with_score(
             logger.info(f"[ALLOWED {idx}] Q{q_id}: '{q_vertex.text()}' <-> D{d_id}: '{d_vertex.text()}' with confidence {score:.4f}")
     return allowed, confidence_scores
 def get_top_k_matched_vertices_by_scores(query_vertices: Dict[int, Vertex], data_vertices: Dict[int, Vertex], confidence_scores: Dict[Tuple[int, int], float], k: int) -> Dict[Vertex, Set[Tuple[Vertex, float]]]:
+    """Materialize the top-scoring data vertices from an id-pair score table."""
+
     top_k_matches: Dict[Vertex, List[Tuple[Vertex, float]]] = {}
     for (q_id, d_id), score in confidence_scores.items():
         q_vertex = query_vertices[q_id]

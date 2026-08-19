@@ -1,3 +1,5 @@
+//! Criterion benchmarks for native and inter-graph simulation workloads.
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use graph_base::impls::standard::StandardLabeledGraph;

@@ -1,3 +1,5 @@
+"""Bounded graph-simulation baseline for filtering retrieved contexts."""
+
 from __future__ import annotations
 from typing import Any, Dict, Set, Tuple, List
 import networkx as nx
@@ -8,8 +10,11 @@ from simulation import get_bounded_simulation
 from hyper_simulation.component.consistent import load_hypergraphs_for_instance
 from hyper_simulation.query_instance import QueryInstance
 def graph_to_networkx(graph: Graph, default_bound: int = 5) -> nx.DiGraph:
+	"""Convert an internal directed graph to the NetworkX ABI used by simulation."""
+
 	nx_graph = nx.DiGraph()
 	for vertex in graph.vertices:
+		# Keep the stable integer ID both as the NetworkX key and as callback data.
 		nx_graph.add_node(
 			vertex.id,
 			vertex_id=vertex.id,
@@ -25,6 +30,8 @@ def graph_to_networkx(graph: Graph, default_bound: int = 5) -> nx.DiGraph:
 		)
 	return nx_graph
 def build_compare_table(graph1: Graph, graph2: Graph) -> Dict[Tuple[int, int], bool]:
+	"""Precompute lexical and denial-constraint compatibility for vertex pairs."""
+
 	compare_table: Dict[Tuple[int, int], bool] = {}
 	for q_vertex in graph1.vertices:
 		for d_vertex in graph2.vertices:
@@ -42,22 +49,30 @@ def get_bsim_baseline(
 	default_bound: int = 5,
 	is_label_cached: bool = False,
 ) -> Dict[int, Set[int]]:
+	"""Compute bounded simulation and normalize extension node keys to integers."""
+
 	graph1 = Graph.from_hypergraph(hypergraph1)
 	graph2 = Graph.from_hypergraph(hypergraph2)
 	nx_graph1 = graph_to_networkx(graph1, default_bound)
 	nx_graph2 = graph_to_networkx(graph2, default_bound)
 	compare_table = build_compare_table(graph1, graph2)
 	def compare(attr1: Dict[str, Any], attr2: Dict[str, Any]) -> bool:
+		"""Resolve one extension callback against the precomputed table."""
+
+		# The extension calls back with NetworkX attribute dictionaries.
 		q_id = attr1.get("vertex_id")
 		d_id = attr2.get("vertex_id")
 		if not isinstance(q_id, int) or not isinstance(d_id, int):
 			return False
 		return compare_table.get((q_id, d_id), False)
 	def bound(*_args: Any, **_kwargs: Any) -> int:
+		"""Return the fixed traversal bound expected by the extension ABI."""
+
 		return default_bound
 	raw_simulation = get_bounded_simulation(nx_graph1, nx_graph2, compare, bound, is_label_cached=is_label_cached)
 	normalized: Dict[int, Set[int]] = {}
 	for src_node, target_nodes in raw_simulation.items():
+		# Accept both current integer IDs and legacy wrapper objects from the ABI.
 		src_id = src_node if isinstance(src_node, int) else getattr(src_node, 'id', src_node)
 		normalized[src_id] = {
 			dst_node if isinstance(dst_node, int) else getattr(dst_node, 'id', dst_node)
@@ -70,6 +85,8 @@ def run_bsim_for_query(
 	hypergraph_dir: str = "/home/vincent/hyper-simulation/data/hypergraph",
 	default_bound: int = 5,
 ) -> QueryInstance:
+	"""Filter a query instance to contexts accepted by bounded simulation."""
+
 	query_hg, context_hgs = load_hypergraphs_for_instance(qi, dataset_name=task, base_dir=hypergraph_dir)
 	context_hgs = [hg for hg in context_hgs if hg is not None]
 	if query_hg and context_hgs:
@@ -81,7 +98,9 @@ def run_bsim_for_query(
 		if matched_context_indices:
 			qi.fixed_data = [qi.data[i] for i in matched_context_indices if i < len(qi.data)]
 		else:
+			# Preserve retrieval recall when the baseline cannot select any context.
 			qi.fixed_data = qi.data
 	else:
+		# Missing serialized hypergraphs must not erase the original retrieval set.
 		qi.fixed_data = qi.data
 	return qi

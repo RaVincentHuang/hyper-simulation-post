@@ -1,3 +1,5 @@
+"""Mutable linguistic hypergraph objects used by the production pipeline."""
+
 from hyper_simulation.hypergraph.dependency import LocalDoc, Node, Relationship
 from hyper_simulation.hypergraph.linguistic import QueryType, Pos, Tag, Dep, Entity
 from hyper_simulation.hypergraph.entity import ENT
@@ -6,6 +8,8 @@ import logging
 from hyper_simulation.utils.log import getLogger
 logger = getLogger(__name__)
 class Vertex:
+    """A semantic vertex backed by one or more coreferent dependency nodes."""
+
     def __init__(self, id: int, nodes: list[Node]):
         self.id = id
         self.nodes = nodes
@@ -90,6 +94,8 @@ class Vertex:
             return False
         return any(pos1 == pos2 for (pos1, pos2) in itertools.product(self.poses, other.poses))
     def is_domain(self, other: 'Vertex') -> bool:
+        """Return whether two vertices share a compatible semantic domain."""
+
         self_has_ent = any(e != Entity.NOT_ENTITY for e in self.ents)
         other_has_ent = any(e != Entity.NOT_ENTITY for e in other.ents)
         if self_has_ent and other_has_ent:
@@ -176,6 +182,8 @@ class Vertex:
         return bool(common_tags)
     @staticmethod
     def resolved_text(node: 'Node') -> str:
+        """Resolve coreference and pronoun links before returning node text."""
+
         if node.resolved_text:
             return node.resolved_text
         if node.coref_primary:
@@ -186,6 +194,8 @@ class Vertex:
         return node.text
     @staticmethod
     def position_text(node: 'Node') -> str:
+        """Return the resolved surface form used inside relation descriptions."""
+
         if node.resolved_text:
             return node.resolved_text
         if node.coref_primary:
@@ -196,6 +206,8 @@ class Vertex:
         prefix = ""
         return node.text
     def text(self) -> str:
+        """Return resolved vertex text, prefixing query placeholders with ``?``."""
+
         if not self.nodes:
             return ""
         if self.is_query():
@@ -203,6 +215,8 @@ class Vertex:
         return Vertex.resolved_text(self.nodes[0])
     @staticmethod
     def from_nodes(vertices: list[Node], id_map: dict[Node, int]) -> list['Vertex']:
+        """Group dependency nodes that share a within-document vertex id."""
+
         vertex_map: dict[int, list[Node]] = {}
         for vertex in vertices:
             vid = id_map.get(vertex)
@@ -214,6 +228,8 @@ class Vertex:
         return [Vertex(vid, nodes) for vid, nodes in vertex_map.items()]
     @staticmethod
     def vertex_node_map(vertices: list['Vertex']) -> dict[Node, 'Vertex']:
+        """Index every backing dependency node by its containing vertex."""
+
         vertex_map: dict[Node, Vertex] = {}
         for vertex in vertices:
             for node in vertex.nodes:
@@ -231,6 +247,10 @@ class Vertex:
         wordnet = any(n.entity and n.entity != ENT.NOT_ENT for n in self.nodes)
         return ner or wordnet
     def type(self) -> ENT | None:
+        """Return the most specific cached project-level entity type."""
+
+        # Type specificity, rather than node order, decides among multiple
+        # coreferent annotations stored on the same vertex.
         if self.type_cache is not None:
             return self.type_cache
         candidate_type = None
@@ -250,6 +270,8 @@ class Vertex:
         self.type_cache = candidate_type
         return self.type_cache
     def query_type(self) -> QueryType | None:
+        """Return the first explicit query-placeholder type on this vertex."""
+
         if not self.is_query():
             return None
         for n in self.nodes:
@@ -257,6 +279,8 @@ class Vertex:
                 return n.query_type
         return None
 class Hyperedge:
+    """One dependency-rooted n-ary relation with optional source provenance."""
+
     def __init__(self, root: Vertex, vertices: list[Vertex], desc: str, full_desc: str, start: int, end: int):
         self.root = root
         self.vertices = vertices
@@ -268,6 +292,10 @@ class Hyperedge:
         self.hypergraph_id: int | None = None
         self._current_node_cache: dict[Vertex, Node] = {}
     def current_node(self, vertex: Vertex) -> Node:
+        """Select the backing node belonging to this relation's source span."""
+
+        # Fused vertices contain nodes from several source documents; source id
+        # is therefore stronger evidence than coincident token offsets.
         if vertex in self._current_node_cache:
             return self._current_node_cache[vertex]
         def in_edge_range(n: Node) -> bool:
@@ -303,6 +331,8 @@ class Hyperedge:
             return vertex.nodes[0]
         assert False, f"Vertex does not contain a node in hyperedge range, Vertex nodes: {vertex.nodes}, Hyperedge range: {self.start}-{self.end}, Hyperedge is {self.desc}"
     def assert_nodes_reach_root(self) -> None:
+        """Assert that each participant reaches the relation root by head links."""
+
         root_node = self.current_node(self.root)
         assert root_node is not None, f"Root node is missing for hyperedge: {self.desc}"
         for vertex in self.vertices[1:]:
@@ -326,6 +356,8 @@ class Hyperedge:
                 f"Non-root vertex '{vertex.text()}'<{node}> cannot reach root '{self.root.text()}'<{root_node}> via head chain in hyperedge: \n{self.text()}\nwith {', '.join(n.text for n in visited)} <{', '.join(str(n) for n in visited)}>"
             )
     def text(self) -> str:
+        """Render the relation span with resolved participant text."""
+
         sentence = self.desc or ""
         sentence_by_range = self.full_desc or ""
         def calc_prefix_suffix(range_text: str, full_sentence: str) -> tuple[str, str]:
@@ -359,6 +391,8 @@ class Hyperedge:
         final_sentence = " ".join(final_sentence.split())
         return final_sentence
     def have_no_link(self, vertex1: Vertex, vertex2: Vertex) -> bool:
+        """Return whether two participants occupy mutually competing roles."""
+
         if vertex1 == self.root or vertex2 == self.root:
             return vertex1 == self.root
         node1 = self.current_node(vertex1)
@@ -371,6 +405,8 @@ class Hyperedge:
             return True
         return False
     def is_sub_vertex(self, vertex1: Vertex, vertex2: Vertex) -> bool:
+        """Order two participants by grammatical role, then token position."""
+
         if vertex1 == self.root:
             return True
         if vertex2 == self.root:
@@ -394,9 +430,13 @@ class Hyperedge:
             return True
         return False
     def set_hypergraph_id(self, hypergraph_id: int | None) -> None:
+        """Attach the source-hypergraph id used after evidence fusion."""
+
         self.hypergraph_id = hypergraph_id
     @staticmethod
     def form_relationship(relationship: Relationship, vertex_map: dict[Node, Vertex]) -> 'Hyperedge':
+        """Convert a dependency relationship into a deduplicated hyperedge."""
+
         vertices = []
         root = vertex_map.get(relationship.root)
         assert root is not None, f"Root vertex not found in vertex map. Relationship root: {relationship.root}"
@@ -409,11 +449,15 @@ class Hyperedge:
     def __format__(self, format_spec: str) -> str:
         return f"Hyperedge(desc={self.desc}, vertices={[v.id for v in self.vertices]})"
 class Path:
+    """A vertex-to-vertex path represented by its traversed hyperedges."""
+
     def __init__(self, hyperedges: list[Hyperedge]) -> None:
         self.hyperedges: list[Hyperedge] = hyperedges
     def length(self) -> int:
         return len(self.hyperedges)
 class Hypergraph:
+    """Vertices, n-ary relations, provenance, and cached traversal indexes."""
+
     def __init__(self, vertices: list[Vertex], hyperedges: list[Hyperedge], doc: LocalDoc) -> None:
         self.vertices: list[Vertex] = vertices
         self.hyperedges: list[Hyperedge] = hyperedges
@@ -428,6 +472,8 @@ class Hypergraph:
         self.neighbor_map_cache: dict[int, dict[Vertex, set[Vertex]]] = {}
     @staticmethod
     def from_rels(vertices: list[Node], relationships: list[Relationship], id_map: dict[Node, int], doc: LocalDoc) -> 'Hypergraph':
+        """Build vertices and father-linked hyperedges from dependency output."""
+
         vertex_objs = Vertex.from_nodes(vertices, id_map)
         vertex_map = Vertex.vertex_node_map(vertex_objs)
         hyperedges = []
@@ -443,16 +489,22 @@ class Hypergraph:
                     hyperedge.father = father_hyperedge
         return Hypergraph(vertex_objs, hyperedges, doc)
     def save(self, filepath: str) -> None:
+        """Persist the complete mutable hypergraph with pickle."""
+
         import pickle
         with open(filepath, 'wb') as f:
             pickle.dump(self, f)
     @staticmethod
     def load(filepath: str) -> 'Hypergraph':
+        """Restore a hypergraph previously written by :meth:`save`."""
+
         import pickle
         with open(filepath, 'rb') as f:
             hypergraph = pickle.load(f)
         return hypergraph
     def neighbors(self, vertex: Vertex, hop: int = -1) -> set[Vertex]:
+        """Return cached hypergraph neighbors within ``hop`` relation steps."""
+
         if hop not in self.neighbor_map_cache:
             logger.debug(f"Building neighbor map for hop={hop} (cache miss)")
             self.neighbor_map_cache[hop] = self._build_neighbors_map(hop)
@@ -521,6 +573,8 @@ class Hypergraph:
             neighbor_map[to_vertex].add(from_vertex)
         return neighbor_map
     def paths(self, vertex1: Vertex, vertex2: Vertex) -> list[Path]:
+        """Enumerate and cache breadth-first vertex paths through hyperedges."""
+
         if (vertex1, vertex2) in self.path_map_cache:
             cached = self.path_map_cache[(vertex1, vertex2)]
             logger.debug(f"paths({vertex1.text()}, {vertex2.text()}) → {len(cached)} paths (cached)")
@@ -550,6 +604,8 @@ class Hypergraph:
         logger.debug(f"paths({vertex1.text()}, {vertex2.text()}) → {len(paths)} paths (computed)")
         return paths
     def log_summary(self, logger: logging.Logger, level: str = "INFO") -> None:
+        """Write a detailed vertex and hyperedge summary to a logger."""
+
         log_func = getattr(logger, level.lower())
         log_func(f"Hypergraph:")
         log_func(f"  • Vertices: {len(self.vertices)}")

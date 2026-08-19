@@ -1,3 +1,5 @@
+"""Prompt text for SARA statutory entailment."""
+
 LEGALBENCH_SARA_ENTAILMENT_BASE = """### Legal Text:
 {context_text}
 {question}

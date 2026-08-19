@@ -1,4 +1,11 @@
 
+"""Type declarations for the optional ``simulation`` PyO3 extension.
+
+The misspelling ``SematicCluster`` in the underlying ABI is retained for
+backward compatibility; the public Delta helpers associate one such logical
+cluster with every relevant `(u, v)` anchor pair.
+"""
+
 from typing import Callable, Dict, Optional
 import networkx
 
@@ -72,22 +79,32 @@ class Event:
 # (cluster_u, cluster_v)
 class DMatch:
     """
-    D-Match for hyper simulation 
+    Frozen D-match relations consumed by Hyper Simulation.
     """
     def __init__(self) -> None: ...
     @staticmethod
     def from_dict(d_match_by_sc_id: dict[tuple[int, int], set[tuple[int, int]]]) -> 'DMatch': ...
     """
-    Register the d-match by sematic cluster's id, from `add_sematic_cluster_pair`.
-    For a sematic cluster pair by `id`, we set map[(id, id)] = R as the relation, where (u_id, v_id) in R, are node's id.
+    Register D-match by the logical HC id returned by Delta.
     """
 
 class Delta: # Delta(u, v) 
+    """Register logical HC dependencies for one or more Delta anchors."""
+
     def __init__(self) -> None: ...
     def add_sematic_cluster_pair(self, u: Node, v: Node, cluster_u: list[Hyperedge], cluster_v: list[Hyperedge]) -> int: ...
     """
-    Add a sematic of (u, v), register a id of the pair that, (cluster_u, id) and (cluster_v, id) 
+    Compatibility helper that creates one HC for one Delta anchor.
     """
+    def add_sematic_cluster_pair_for_pairs(
+        self,
+        node_pairs: list[tuple[int, int]],
+        cluster_u: list[Hyperedge],
+        cluster_v: list[Hyperedge],
+    ) -> int: ...
+    """Create one logical HC and associate the same id with every anchor."""
+    def cluster_count(self) -> int: ...
+    def association_count(self) -> int: ...
 
 # (u, v) (cluster_u, cluster_v)
 # (u', v') 
@@ -131,12 +148,15 @@ class Hypergraph:
     @staticmethod
     def get_hyper_simulation(query: 'Hypergraph', data: 'Hypergraph', delta: Delta, d_match: DMatch) -> dict[int, set[int]]:
         """
-        Hyper Simulation
+        Hyper Simulation using the indexed worklist implementation.
         """
+
+    @staticmethod
+    def get_hyper_simulation_naive(query: 'Hypergraph', data: 'Hypergraph', delta: Delta, d_match: DMatch) -> dict[int, set[int]]:
+        """Reference fixed-point implementation used for parity testing and traces."""
         
     @staticmethod
     def get_hyper_simulation_strict(query: 'Hypergraph', data: 'Hypergraph', delta: Delta, d_match: DMatch) -> dict[int, set[int]]:
         """
         Strict Hyper Simulation
         """
-

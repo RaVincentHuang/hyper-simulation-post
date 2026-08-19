@@ -1,6 +1,10 @@
+"""Trim retrieved contexts using persisted pairwise relation decisions."""
+
 import json
 from tqdm import tqdm
 def read_rel(file_path):
+    """Flatten relation pairs from a line-oriented JSON artifact."""
+
     relation=[]
     with open(file_path, "r") as fin:
         for k,example in enumerate(fin):
@@ -10,6 +14,8 @@ def read_rel(file_path):
                     relation.append(y)
     return relation
 def read_evi(file_path):
+    """Read context IDs, context records, and queries from retrieval JSONL."""
+
     ids=[]
     ctxs=[]
     query=[]
@@ -21,6 +27,8 @@ def read_evi(file_path):
             ids.append([int(x['id']) for x in example['ctxs']])
     return ids,ctxs,query
 def get_context(rel_path,file_path):
+    """Drop contexts marked subordinate by a persisted relation pair."""
+
     rel=read_rel(rel_path)
     all_ids,all_ctxs, query=read_evi(file_path)
     final_evi=[]
@@ -42,6 +50,8 @@ def get_context(rel_path,file_path):
         final_evi.append(evidence)
     return final_evi
 def calc_trim(rel_path, file_path, trimed_path):
+    """Compute trimmed evidence lists and serialize them as JSON."""
+
     pro_c = get_context(rel_path, file_path)
     json_data = json.dumps(pro_c)
     with open(trimed_path, "w") as file:

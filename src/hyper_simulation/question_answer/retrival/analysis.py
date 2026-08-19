@@ -1,3 +1,5 @@
+"""Build and persist context graphs for retrieved QA passages."""
+
 import json
 import re
 from hyper_simulation.graph_generator.build import build_graph, save_graph, build_graph_batch, build_graph_step_by_step, load_graph
@@ -5,13 +7,21 @@ from hyper_simulation.llm import prompt
 from langchain_ollama import OllamaLLM, ChatOllama
 import os
 from tqdm import tqdm
-from colorama import Fore, Back, Style, init
+try:
+    from colorama import init
+except ImportError:
+    def init(*, autoreset: bool = False) -> None:
+        """Keep the non-colored analysis path available without colorama."""
+
+        del autoreset
 import time
 import asyncio
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 import networkx as nx
 import logging
 def read_retrival_data(file_path):
+    """Read retrieval JSONL records into memory."""
+
     data = []
     with open(file_path, "r") as fin:
         for k, example in enumerate(fin):
@@ -19,6 +29,8 @@ def read_retrival_data(file_path):
             data.append(example)
     return data
 class SolvedTask:
+    """Batch graph-building tasks while resuming from valid saved graphs."""
+
     def __init__(self, source_path, target_path, model, top_k=15):
         self.source_path = source_path
         self.target_dir = target_path
@@ -45,6 +57,7 @@ class SolvedTask:
         self.total_cnt = total_cnt
         self.target_files = []
         solved_task_cnt = 0
+        # Existing non-empty graph files form the durable completion ledger.
         for root, _, files in os.walk(target_path):
             for file in files:
                 if file.endswith(".json") and "_" in file:
@@ -66,6 +79,8 @@ class SolvedTask:
         print(f"solved rates: {self.solved_task_cnt / self.total_cnt * 100}% [{self.solved_task_cnt}/{self.total_cnt}]")
         self.logger.info(f"Solving file {self.source_path}, solved rates: {self.solved_task_cnt / self.total_cnt * 100}% [{self.solved_task_cnt}/{self.total_cnt}]")
     async def build_graph(self, semaphore, question_id: int, id: int, title: str, text: str, prop: str) -> nx.DiGraph | None:
+        """Build one unsolved graph under the caller's concurrency limit."""
+
         if self._is_solved(question_id, id):
             return
         async with semaphore:
@@ -78,12 +93,16 @@ class SolvedTask:
             return True
         return False
     def add_task(self, question_id: int, id: int, title: str, text: str, prop: str):
+        """Queue an unsolved context and flush once the task pool is full."""
+
         if self._is_solved(question_id, id):
             return
         self.current_tasks.append((question_id, id, title, text, prop))
         if len(self.current_tasks) >= self.task_pool_cnt:
             self.unstack_all()
     def unstack_all(self):
+        """Build, annotate, and persist every currently queued context graph."""
+
         prompt_list: list[dict] = []
         for question_id, id, title, text, prop in self.current_tasks:
             prompt_list.append({
@@ -100,6 +119,7 @@ class SolvedTask:
             graph.graph['title'] = title
             graph.graph['text'] = text
             graph.graph['prop'] = prop
+            # A saved graph is registered as solved only after persistence succeeds.
             save_graph(graph, f"{self.target_dir}/{question_id}_{id}.json")
             self.logger.info(f"Saved graph: {self.target_dir}/{question_id}_{id}.json")
             self._register_solved(question_id, id)
@@ -115,6 +135,8 @@ class SolvedTask:
             self.task_solved[question_id] = set()
         self.task_solved[question_id].add(id)
 def task_seqs(file_path, target_dir, top_k):
+    """Process the top retrieved contexts for every question in a JSONL file."""
+
     model = OllamaLLM(model="qwen2.5:32b")
     solved_task = SolvedTask(file_path, target_dir, model, top_k=top_k)
     with open(file_path, "r") as fin:

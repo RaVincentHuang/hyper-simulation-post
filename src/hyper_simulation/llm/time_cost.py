@@ -1,3 +1,5 @@
+"""Benchmark batched graph-extraction latency for retrieved passages."""
+
 from ast import mod
 from itertools import chain
 import json
@@ -8,15 +10,15 @@ from hyper_simulation.llm import prompt
 from hyper_simulation.llm.prompt.graph import graph_building, simple_graph_building, graph_records
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.language_models import BaseLLM, BaseChatModel
-from langchain_openai import ChatOpenAI
 from langchain_ollama import OllamaLLM
-from langchain_community.chat_models.moonshot import MoonshotChat
 from pydantic import BaseModel, Field
 import networkx as nx
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 import time
 from tqdm import tqdm
 def build_graph(model: BaseLLM, prompt_list: list[dict], task='popqa'):
+    """Build graphs for a prompt batch and report average invocation latency."""
+
     global graph_building
     start = time.time()
     match task:
@@ -31,10 +33,13 @@ def build_graph(model: BaseLLM, prompt_list: list[dict], task='popqa'):
     if len(prompt_list) == 1:
         res_list =   [chain.invoke(prompt_list[0])]
     else:
+        # Use the provider's batch path so timing reflects production dispatch.
         res_list = chain.batch(prompt_list)
     end = time.time()
     print(f"Time cost per call: {(end - start) / len(res_list)} ({end - start}/{len(res_list)})")
 def test_batch(build_graph, file_path, model, top_k):
+    """Time graph extraction for the first retrieval record at a given depth."""
+
     with open(file_path, "r") as fin:
         for k, example in enumerate(fin):
             example = json.loads(example)

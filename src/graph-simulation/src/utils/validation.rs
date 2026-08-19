@@ -1,3 +1,5 @@
+//! Synthetic graph data types and generators used to validate solver parity.
+
 use std::{clone, collections::{HashMap, HashSet}, hash::Hash, ops::{Add, BitXor, Div, Mul, Sub}};
 use rand::{prelude::*, rng};
 use rand::distr::StandardUniform;
@@ -116,23 +118,23 @@ fn generate_orthogonal_unit(base: &Desc) -> Desc {
     
     let mut rng = rng();
     loop {
-        // 生成随机高斯向量
+        // Draw a random candidate vector.
         for i in 0..16 {
             orthogonal.0[i] = rng.sample(StandardUniform);
         }
         
         
-        // 计算与基向量的点积
+        // Compute its projection onto the base direction.
         let projection = (orthogonal.clone() * base.clone()) / base_norm;
         
-        // 减去投影分量使其正交
+        // Remove the projected component to obtain an orthogonal vector.
         // for i in 0..16 {
         //     orthogonal[i] -= projection * base[i] / base_norm;
         // }
 
         orthogonal = orthogonal - (base.clone() * projection) / base_norm;
         
-        // 归一化处理
+        // Normalize only after rejecting numerically degenerate candidates.
         let ortho_norm = (orthogonal.clone() * orthogonal.clone()).sqrt();
         if ortho_norm > 1e-10 {
             orthogonal = orthogonal / ortho_norm;
@@ -194,4 +196,3 @@ struct DiHyperedge {
     src: HashSet<u64>,
     dst: HashSet<u64>
 }
-

@@ -1,3 +1,5 @@
+"""Prompts for question normalization, graph conversion, and entity numbering."""
+
 from langchain_core.prompts import PromptTemplate
 from langchain_core.prompts import ChatMessagePromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate, AIMessagePromptTemplate
 question_to_declarative_sentence_template = """You are a helpful assistant of a editor.

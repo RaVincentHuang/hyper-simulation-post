@@ -1,3 +1,5 @@
+"""Prompt variants for multihop question answering."""
+
 MULTIHOP_QA_BASE = """### Context:
 {context_text}
 {question}

@@ -1,14 +1,18 @@
+//! Bounded graph simulation with caller-defined pairwise distance limits.
+
 use graph_base::interfaces::graph::{Adjacency, AdjacencyInv, Degree, Directed, Graph};
 use graph_base::interfaces::labeled::Labeled;
 
 use std::collections::{HashSet, HashMap};
 
 pub trait BoundedSimulation<'a> {
+    /// Node type participating in the bounded relation.
     type Node: 'a;
     fn get_bounded_simulation(&'a self, other: &'a Self) -> HashMap<&'a Self::Node, HashSet<&'a Self::Node>>;
 }
 
 pub trait Bounded<'a>: Graph<'a> {
+    /// Maximum admissible path distance for a candidate pair `(u, v)`.
     fn get_bound(&'a self, u: &'a Self::Node, v: &'a Self::Node) -> usize;
 }
 
@@ -135,34 +139,34 @@ where
                 if other.out_degree(&other_out_degree, v) == 0 {
                     continue;
                 }
-                // v 在 presim(u) 中，当且仅当：对所有 u' 都不存在这样的 v'
-                // 这里 u' 满足 (u_prime, u) in E_self，即 u' 是 u 的前驱
+                // `v` enters presim(u) when no witness v' exists for any
+                // predecessor u' with (u', u) in the query graph.
                 for u_prime in self.get_pre(&adj_self_inv, u) {
-                    // 首先检查条件 (2)：label_same(u_prime, v)
-                    // 如果 v 的标签不等于 u_prime 的标签，则条件 (2) 不满足，v 不可能被排除
+                    // Condition (2): only label-compatible predecessors can
+                    // invalidate this candidate.
                     if !self.label_same(u_prime, v) {
-                        continue;  // 这个 u_prime 无法排除 v，检查下一个 u_prime
+                        continue; // This predecessor cannot exclude v.
                     }
                     
                     let bound = self.get_bound(&u_prime, &u);
-                    // 检查：是否存在 v' 满足条件
+                    // Search for a data witness v' satisfying all conditions:
                     // (1) v' in sim(u)
-                    // (2) label_same(u_prime, v) - 已经满足（见上面的检查）
-                    // (3) len(v/.../v') <= bound (对应 dec)
+                    // (2) label_same(u_prime, v), already checked above;
+                    // (3) len(v/.../v') <= bound, represented by `dec`.
                     if let Some(dec_set) = dec.get(&(bound, &u_prime, v)) {
-                        // dec_set 包含所有标签为 u_prime 且距离 v 在 bound 内的节点
-                        // 检查这些节点是否在 sim(u) 中
+                        // `dec_set` contains compatible nodes within the bound;
+                        // intersect it with the current sim(u).
                         let has_match = dec_set.iter().any(|v_prime| {
                             sim.get(&u).unwrap().contains(v_prime)
                         });
-                        // 如果存在这样的 v'，则 v 不在 presim(u) 中
+                        // A witness prevents v from entering presim(u).
                         if has_match {
                             continue 'v_loop;
                         }
                     }
-                    // 如果 dec_set 不存在或为空，则不存在满足条件的 v'，继续检查下一个 u'
+                    // A missing/empty dec set provides no witness; continue.
                 }
-                // 所有 u' 都不存在满足条件的 v'，v 在 presim(u) 中
+                // No predecessor found a witness, so schedule v for removal.
                 candidates.insert(v);
             }
             presim.insert(u, candidates);
@@ -179,50 +183,50 @@ where
         //     premv(u) := ∅;
 
         loop {
-            // 1. 找到一个 presim 非空的节点 u，如果没有则退出
+            // 1. Select a query node with pending removals.
             let Some(u) = self.nodes().find(|node| !presim.get(node).unwrap().is_empty()) else {
                 break;
             };
             
-            // 2. 提前复制 premv_u，避免后续借用冲突
+            // 2. Clone pending removals before mutating the maps.
             let premv_u = presim.get(&u).unwrap().clone();
             
-            // 3. 收集所有 u 的前驱节点 u_prime，即边 (u_prime, u)
+            // 3. Collect all predecessors u' with (u', u) in the query graph.
             let u_primes: Vec<_> = self.get_pre(&adj_self_inv, &u).collect();
             
             for u_prime in u_primes {
-                // 4. 提前收集 sim(u_prime) 和 premv_u 的交集
+                // 4. Restrict removals to candidates still present in sim(u').
                 let sim_u_prime = sim.get(&u_prime).unwrap();
                 let to_remove: Vec<_> = premv_u.intersection(sim_u_prime).cloned().collect();
                 
                 for z in to_remove {
-                    // 5. 现在可以安全地修改 sim
+                    // 5. Mutate sim only after all borrowed intersections end.
                     sim.get_mut(&u_prime).unwrap().remove(&z);
                     
                     if sim.get(&u_prime).unwrap().is_empty() {
                         return HashMap::new();
                     }
                     
-                    // 6. 收集 u_prime 的前驱节点 u_double_prime，即边 (u_double_prime, u_prime)
+                    // 6. Propagate the change to predecessors u'' of u'.
                     let u_double_primes: Vec<_> = self.get_pre(&adj_self_inv, &u_prime).collect();
                     
-                    // 7. 收集所有需要更新的 (u_double_prime, z_prime) 对
+                    // 7. Accumulate presim updates before mutating the map.
                     let mut updates: Vec<(&T::Node, &T::Node)> = Vec::new();
                     
-                    // 收集当前 presim(u_prime) 的值，用于检查 z' /∈ presim(u′)
+                    // Snapshot presim(u') to avoid scheduling duplicates.
                     let presim_u_prime = presim.get(&u_prime).unwrap().clone();
                     
                     for u_double_prime in u_double_primes {
                         let bound = self.get_bound(&u_double_prime, &u_prime);
                         
                         if let Some(anc_set) = anc.get(&(bound, &u_double_prime, &z)) {
-                            // 收集 anc_set 到临时变量
+                            // Materialize the ancestor candidates for stable borrowing.
                             let anc_vec: Vec<_> = anc_set.iter().cloned().collect();
                             
-                            // 过滤出满足条件的 z_prime: z' ∈ anc(...) ∧ z' /∈ presim(u′)
+                            // Keep z' in anc(...) that is not already in presim(u').
                             for z_prime in anc_vec.iter() {
                                 if !presim_u_prime.contains(z_prime) {
-                                    // 检查 dec(...) ∩ sim(u') 是否为空
+                                    // Schedule z' only when dec(...) intersects no sim(u').
                                     if let Some(dec_set) = dec.get(&(bound, &u_prime, z_prime)) {
                                         let sim_u_prime_set = sim.get(&u_prime).unwrap();
                                         let has_intersection = dec_set.iter().any(|v| sim_u_prime_set.contains(v));
@@ -236,14 +240,14 @@ where
                         }
                     }
                     
-                    // 8. 批量更新 presim(u_double_prime)
+                    // 8. Apply accumulated updates in one mutation phase.
                     for (u_double_prime, z_prime) in updates {
                         presim.get_mut(&u_double_prime).unwrap().insert(z_prime);
                     }
                 }
             }
             
-            // 9. 清空 presim(u)
+            // 9. Mark this pending-removal set as processed.
             presim.get_mut(&u).unwrap().clear();
         }
 
